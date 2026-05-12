@@ -282,6 +282,54 @@ class T1Client:
                 return entry.get("SearchPath", "")
         return None
 
+    def save_asset_from_excel(self, endpoint: str = "save_asset") -> Path:
+        """Push spreadsheet edits back to T1.
+
+        For each row in [first_row, last_row] of every sheet:
+        - Read AssetNumber from column 2; skip unless it's a non-empty string.
+        - fetch_asset() to get the full asset JSON.
+        - For every direct-field column (row 1 blank, not 'Attribute'), overwrite
+          the top-level field named in row 6 with the cell value.
+        - POST the modified JSON via save_asset() (uses asset_save endpoint, adds
+          'Authorization: Bearer <token>')."""
+        from openpyxl import load_workbook  # lazy import
+
+        cfg = self.svc_config[endpoint]
+        xlsx_path = Path(cfg["file"])
+        first_row = int(cfg["first_row"])
+        last_row = int(cfg["last_row"])
+
+        wb = load_workbook(xlsx_path)
+
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            max_col = ws.max_column
+
+            headers = [
+                (
+                    str(ws.cell(row=1, column=col).value or ""),
+                    str(ws.cell(row=6, column=col).value or ""),
+                )
+                for col in range(1, max_col + 1)
+            ]
+
+            for row in range(first_row, last_row + 1):
+                asset_number = ws.cell(row=row, column=2).value
+                if not isinstance(asset_number, str) or not asset_number.strip():
+                    continue
+
+                print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
+                asset = self.fetch_asset(asset_number)
+
+                for col_idx, (kind, header) in enumerate(headers, start=1):
+                    if kind == "Attribute" or not header:
+                        continue
+                    asset[header] = ws.cell(row=row, column=col_idx).value
+
+                self.save_asset(asset)
+
+        return xlsx_path
+
     def extract_asset(self, endpoint: str = "extract_asset") -> Path:
         """Populate spreadsheet rows with live asset values.
 

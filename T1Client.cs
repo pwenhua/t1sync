@@ -574,6 +574,73 @@ namespace T1Sync
             }
         } 
 
+        private static object? ReadCellValue(IXLCell cell)
+        {
+            var v = cell.Value;
+            if (v.IsBlank) return null;
+            if (v.IsText) return v.GetText();
+            if (v.IsNumber) return v.GetNumber();
+            if (v.IsBoolean) return v.GetBoolean();
+            if (v.IsDateTime) return v.GetDateTime().ToString("o");
+            return cell.GetString();
+        }
+
+        public string SaveAssetFromExcel(string endpoint = "save_asset")
+        {
+            // For each row in [first_row, last_row] of every sheet:
+            //  - Read AssetNumber from column 2; skip unless it's a non-empty text cell.
+            //  - FetchAsset() to get the full asset JSON.
+            //  - For every direct-field column (row 1 blank, not "Attribute"), overwrite
+            //    the top-level field named in row 6 with the cell value.
+            //  - POST the modified JSON via SaveAsset() (uses asset_save endpoint, adds
+            //    'Authorization: Bearer <token>').
+            var cfg = _svcConfig.GetProperty(endpoint);
+            var xlsxPath = cfg.GetProperty("file").GetString()!;
+            var firstRow = cfg.GetProperty("first_row").GetInt32();
+            var lastRow = cfg.GetProperty("last_row").GetInt32();
+
+            using var wb = new XLWorkbook(xlsxPath);
+            foreach (var ws in wb.Worksheets)
+            {
+                var lastUsed = ws.LastColumnUsed();
+                var maxCol = lastUsed?.ColumnNumber() ?? 0;
+
+                var headers = new List<(string Kind, string Header)>();
+                for (int col = 1; col <= maxCol; col++)
+                {
+                    headers.Add((
+                        ws.Cell(1, col).GetString() ?? "",
+                        ws.Cell(6, col).GetString() ?? ""
+                    ));
+                }
+
+                for (int row = firstRow; row <= lastRow; row++)
+                {
+                    var assetCell = ws.Cell(row, 2);
+                    if (!assetCell.Value.IsText) continue;
+                    var assetNumber = assetCell.GetString();
+                    if (string.IsNullOrWhiteSpace(assetNumber)) continue;
+
+                    Debug.WriteLine($"  -> {ws.Name} row {row}: saving asset {assetNumber}");
+                    var asset = FetchAsset(assetNumber);
+
+                    var assetDict = JsonSerializer.Deserialize<Dictionary<string, object?>>(asset.GetRawText())!;
+
+                    for (int colIdx = 0; colIdx < headers.Count; colIdx++)
+                    {
+                        var (kind, header) = headers[colIdx];
+                        if (kind == "Attribute" || string.IsNullOrEmpty(header)) continue;
+                        assetDict[header] = ReadCellValue(ws.Cell(row, colIdx + 1));
+                    }
+
+                    SaveAsset(assetDict);
+                }
+            }
+
+            Debug.WriteLine($"Saved spreadsheet rows from {xlsxPath}");
+            return xlsxPath;
+        }
+
         public string ExtractAsset(string endpoint = "extract_asset")
         {
             var cfg = _svcConfig.GetProperty(endpoint);

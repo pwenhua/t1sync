@@ -73,10 +73,18 @@ def extract_asset_test():
     print(f"Spreadsheet updated: {path}")
 
 
+def save_asset_from_excel_test():
+    print("Testing save_asset_from_excel...")
+    client = T1Client()
+    path = client.save_asset_from_excel()
+    print(f"Pushed rows from spreadsheet: {path}")
+
+
 if __name__ == "__main__":
     # asset_get_test('0100017')
     # asset_save_test('0100017')
     # parse_meta_test()
     # meta_lookup_test()
     # save_meta_test()
-    extract_asset_test()
+    # extract_asset_test()
+    save_asset_from_excel_test()

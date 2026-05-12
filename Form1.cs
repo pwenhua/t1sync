@@ -14,7 +14,8 @@ namespace T1Sync
             //TestT1Client.ParseMetaTest();
             //TestT1Client.MetaLookupTest();
             //TestT1Client.SaveMetaTest();
-            TestT1Client.ExtractAssetTest();
+            //TestT1Client.ExtractAssetTest();
+            TestT1Client.SaveAssetFromExcelTest();
         }
     }
 }
