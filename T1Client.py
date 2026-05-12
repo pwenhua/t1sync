@@ -115,7 +115,7 @@ class T1Client:
             # AttributeCode → inferred dataType of the primary entry's SearchPath.
             primary = next((e for e in entries if e.get("IsPrimaryValue")), None)
             if primary is not None:
-                result[code] = T1Client._infer_data_type(primary.get("SearchPath", ""))
+                result[code] = ["Attribute", T1Client._infer_data_type(primary.get("SearchPath", ""))]
 
             # Captioned attributes — collect, sort by level, then add.
             items: list[tuple[int, str, list]] = []
@@ -186,17 +186,21 @@ class T1Client:
         return cleaned[:31] or "Sheet"
 
     @staticmethod
-    def _build_meta_columns(node_meta: dict) -> list[tuple[str, str, str, str, str]]:
-        """Produce 5-row column tuples (AttributeCode, level, suffix, dataType, header)
-        from the flat node_meta dict."""
-        columns: list[tuple[str, str, str, str, str]] = []
+    def _build_meta_columns(node_meta: dict) -> list[tuple[str, str, str, str, str, str]]:
+        """Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
+        from the flat node_meta dict. `kind` is "Attribute" for Attribute fields, "" for
+        root fields."""
+        columns: list[tuple[str, str, str, str, str, str]] = []
         for key, value in node_meta.items():
             if isinstance(value, list) and len(value) == 4:
                 # Captioned attribute: [AttributeCode, "level_X", suffix, dataType]
-                columns.append((str(value[0]), str(value[1]), str(value[2]), str(value[3]), key))
+                columns.append(("Attribute", str(value[0]), str(value[1]), str(value[2]), str(value[3]), key))
+            elif isinstance(value, list) and len(value) == 2:
+                # Top-level Attribute scalar: ["Attribute", dataType]
+                columns.append((str(value[0]), "", "", "", str(value[1]), key))
             else:
-                # Top-level scalar (root field or AttributeCode) — bare dataType char.
-                columns.append(("", "", "", str(value), key))
+                # Root field — bare dataType char.
+                columns.append(("", "", "", "", str(value), key))
         return columns
 
     def save_meta_to_excel(self, meta: dict | None = None) -> Path:
@@ -232,8 +236,9 @@ class T1Client:
                 ws.cell(row=3, column=col_idx, value=col_data[2])
                 ws.cell(row=4, column=col_idx, value=col_data[3])
                 ws.cell(row=5, column=col_idx, value=col_data[4])
+                ws.cell(row=6, column=col_idx, value=col_data[5])
 
-                fmt = {"N": "General", "D": "yyyy-mm-dd"}.get(col_data[3], "@")
+                fmt = {"N": "General", "D": "yyyy-mm-dd"}.get(col_data[4], "@")
                 ws.column_dimensions[get_column_letter(col_idx)].number_format = fmt
 
         if not wb.sheetnames:
@@ -282,7 +287,7 @@ class T1Client:
 
         For each row in [first_row, last_row] of every sheet in the workbook,
         read the AssetNumber from column 2, fetch the asset, and write a value
-        into every column based on its 5-row header tuple."""
+        into every column based on its 6-row header tuple (row 1 = kind)."""
         from openpyxl import load_workbook  # lazy import
 
         cfg = self.svc_config[endpoint]
@@ -298,11 +303,11 @@ class T1Client:
 
             headers = [
                 (
-                    str(ws.cell(row=1, column=col).value or ""),
                     str(ws.cell(row=2, column=col).value or ""),
                     str(ws.cell(row=3, column=col).value or ""),
                     str(ws.cell(row=4, column=col).value or ""),
                     str(ws.cell(row=5, column=col).value or ""),
+                    str(ws.cell(row=6, column=col).value or ""),
                 )
                 for col in range(1, max_col + 1)
             ]

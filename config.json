@@ -22,8 +22,14 @@
 
         "extract_asset": {
             "file":"c:/temp/t1.xlsx",
-            "first_row": 6,
-            "last_row": 6
+            "first_row": 7,
+            "last_row": 7
+        },
+
+        "save_asset": {
+            "file":"c:/temp/t1.xlsx",
+            "first_row": 7,
+            "last_row": 7
         },
 
         "asset_meta_file":"c:/temp/t1.xlsx",

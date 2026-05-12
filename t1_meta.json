@@ -1,11 +1,14 @@
-{
+﻿{
   "Tree\\Street Tree": {
     "AssetRegisterName": "A",
     "AssetNumber": "A",
     "Description": "A",
     "ShortDescription": "A",
     "Status": "A",
-    "ASSET_TYPE": "A",
+    "ASSET_TYPE": [
+      "Attribute",
+      "A"
+    ],
     "Height(m)": [
       "ASSET_TYPE",
       "level_1",
@@ -36,7 +39,13 @@
       "Userfield1",
       "A"
     ],
-    "LOCATION": "A",
-    "SERVICEAREA": "A"
+    "LOCATION": [
+      "Attribute",
+      "A"
+    ],
+    "SERVICEAREA": [
+      "Attribute",
+      "A"
+    ]
   }
 }

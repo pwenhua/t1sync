@@ -253,7 +253,7 @@ namespace T1Sync
                 if (primary.HasValue)
                 {
                     var sp = primary.Value.TryGetProperty("SearchPath", out var spProp) ? spProp : default;
-                    result[code] = InferDataType(sp);
+                    result[code] = new object[] { "Attribute", InferDataType(sp) };
                 }
 
                 // Captioned attributes — collect, sort by level, then add.
@@ -364,11 +364,11 @@ namespace T1Sync
             return string.IsNullOrEmpty(result) ? "Sheet" : result;
         }
 
-        private static List<(string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
+        private static List<(string, string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
         {
-            // Produce 5-row column tuples (AttributeCode, level, suffix, dataType, header)
-            // from the flat node_meta dict.
-            var columns = new List<(string, string, string, string, string)>();
+            // Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
+            // from the flat node_meta dict. kind is "Attribute" for Attribute fields, "" for root fields.
+            var columns = new List<(string, string, string, string, string, string)>();
             JsonElement root;
 
             if (nodeMetaObj is JsonElement je)
@@ -390,6 +390,7 @@ namespace T1Sync
                 {
                     // Captioned attribute: [AttributeCode, "level_X", suffix, dataType]
                     columns.Add((
+                        "Attribute",
                         value[0].ToString(),
                         value[1].ToString(),
                         value[2].ToString(),
@@ -397,10 +398,22 @@ namespace T1Sync
                         key
                     ));
                 }
+                else if (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 2)
+                {
+                    // Top-level Attribute scalar: ["Attribute", dataType]
+                    columns.Add((
+                        value[0].ToString(),
+                        "",
+                        "",
+                        "",
+                        value[1].ToString(),
+                        key
+                    ));
+                }
                 else
                 {
-                    // Top-level scalar (root field or AttributeCode) — bare dataType char.
-                    columns.Add(("", "", "", value.ToString() ?? "", key));
+                    // Root field — bare dataType char.
+                    columns.Add(("", "", "", "", value.ToString() ?? "", key));
                 }
             }
             return columns;
@@ -454,8 +467,9 @@ namespace T1Sync
                     ws.Cell(3, i + 1).Value = colData.Item3;
                     ws.Cell(4, i + 1).Value = colData.Item4;
                     ws.Cell(5, i + 1).Value = colData.Item5;
+                    ws.Cell(6, i + 1).Value = colData.Item6;
 
-                    var format = colData.Item4 switch
+                    var format = colData.Item5 switch
                     {
                         "N" => "General",
                         "D" => "yyyy-mm-dd",
@@ -577,11 +591,11 @@ namespace T1Sync
                 for (int col = 1; col <= maxCol; col++)
                 {
                     headers.Add((
-                        ws.Cell(1, col).GetString() ?? "",
                         ws.Cell(2, col).GetString() ?? "",
                         ws.Cell(3, col).GetString() ?? "",
                         ws.Cell(4, col).GetString() ?? "",
-                        ws.Cell(5, col).GetString() ?? ""
+                        ws.Cell(5, col).GetString() ?? "",
+                        ws.Cell(6, col).GetString() ?? ""
                     ));
                 }
 
