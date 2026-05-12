@@ -1,0 +1,5 @@
+Form1.*
+!Form1.cs
+Program.cs
+*.csproj
+*.csproj.user

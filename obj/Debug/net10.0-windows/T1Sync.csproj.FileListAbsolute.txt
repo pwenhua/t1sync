@@ -1,0 +1,16 @@
+C:\Temp\coding\T1\T1Sync\bin\Debug\net10.0-windows\T1Sync.exe
+C:\Temp\coding\T1\T1Sync\bin\Debug\net10.0-windows\T1Sync.deps.json
+C:\Temp\coding\T1\T1Sync\bin\Debug\net10.0-windows\T1Sync.runtimeconfig.json
+C:\Temp\coding\T1\T1Sync\bin\Debug\net10.0-windows\T1Sync.dll
+C:\Temp\coding\T1\T1Sync\bin\Debug\net10.0-windows\T1Sync.pdb
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.Form1.resources
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.csproj.GenerateResource.cache
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.GeneratedMSBuildEditorConfig.editorconfig
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.AssemblyInfoInputs.cache
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.AssemblyInfo.cs
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.csproj.CoreCompileInputs.cache
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.dll
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\refint\T1Sync.dll
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.pdb
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\T1Sync.genruntimeconfig.cache
+C:\Temp\coding\T1\T1Sync\obj\Debug\net10.0-windows\ref\T1Sync.dll

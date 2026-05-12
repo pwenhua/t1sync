@@ -1,0 +1,37 @@
+{
+    "t1ws_workshop":{
+        "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",
+
+        "get_token": {
+            "method": "POST",
+            "url": "oauth2/access_token",
+            "client_id": "maroondah-workshop_64400c8a04e7424683a76918008347",
+            "client_secret":"eOPJ3CxhXTCQmCEAZl7zfd0ypwpcIq4Ov/VNk6OF6ic=",
+            "grant_type":"client_credentials"
+        },
+
+        "asset_get": {
+            "method": "GET",
+            "url": "Api/WS/v2/Asset/Read/TP_AR/"
+        },
+
+         "asset_save": {
+            "method": "POST",
+            "url": "Api/WS/v2/Asset/Save"
+        },
+
+        "extract_asset": {
+            "file":"c:/temp/t1.xlsx",
+            "first_row": 6,
+            "last_row": 6
+        },
+
+        "asset_meta_file":"c:/temp/t1.xlsx",
+
+        "asset_parse_meta":{
+            "Tree\\Street Tree": "0100017"
+        }
+
+    }
+   
+}

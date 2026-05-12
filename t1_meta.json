@@ -1,0 +1,42 @@
+{
+  "Tree\\Street Tree": {
+    "AssetRegisterName": "A",
+    "AssetNumber": "A",
+    "Description": "A",
+    "ShortDescription": "A",
+    "Status": "A",
+    "ASSET_TYPE": "A",
+    "Height(m)": [
+      "ASSET_TYPE",
+      "level_1",
+      "Userfield1",
+      "N"
+    ],
+    "Width(m)": [
+      "ASSET_TYPE",
+      "level_1",
+      "Userfield2",
+      "N"
+    ],
+    "Tr Botanical Name": [
+      "ASSET_TYPE",
+      "level_1",
+      "SelectionType1",
+      "A"
+    ],
+    "TREE TYPE": [
+      "ASSET_TYPE",
+      "level_1",
+      "SelectionType2",
+      "A"
+    ],
+    "Near Power Line": [
+      "ASSET_TYPE",
+      "level_2",
+      "Userfield1",
+      "A"
+    ],
+    "LOCATION": "A",
+    "SERVICEAREA": "A"
+  }
+}
