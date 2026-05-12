@@ -19,6 +19,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 #if USE_CLOSEDXML
 using ClosedXML.Excel;
@@ -38,7 +39,7 @@ namespace T1Sync
 
         private static readonly string[] RootFields =
         {
-            "AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status",
+            "AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status","OperatingStatus"
         };
 
         public string Service { get; }
@@ -585,13 +586,41 @@ namespace T1Sync
             return cell.GetString();
         }
 
+        private static void SetAttributeValue(JsonObject asset, string attrCode, string level, string suffix, object? value)
+        {
+            // Mutate asset["AssetAttributes"] in place: overwrite AttributeItem<suffix>
+            // on the entry matching attrCode + level.
+            if (!level.StartsWith("level_")) return;
+            if (!int.TryParse(level.Substring("level_".Length), out var targetLevel)) return;
+
+            if (asset["AssetAttributes"] is not JsonArray attrs) return;
+            var valueKey = "AttributeItem" + suffix;
+
+            foreach (var item in attrs)
+            {
+                if (item is not JsonObject entry) continue;
+                if ((string?)entry["AttributeCode"] != attrCode) continue;
+                var sp = (string?)entry["SearchPath"] ?? "";
+                var entryLevel = string.IsNullOrEmpty(sp) ? 0 : sp.Split('\\').Length;
+                if (entryLevel != targetLevel) continue;
+                if (entry.ContainsKey(valueKey))
+                {
+                    entry[valueKey] = value == null ? null : JsonSerializer.SerializeToNode(value);
+                    return;
+                }
+            }
+        }
+
         public string SaveAssetFromExcel(string endpoint = "save_asset")
         {
             // For each row in [first_row, last_row] of every sheet:
             //  - Read AssetNumber from column 2; skip unless it's a non-empty text cell.
             //  - FetchAsset() to get the full asset JSON.
-            //  - For every direct-field column (row 1 blank, not "Attribute"), overwrite
-            //    the top-level field named in row 6 with the cell value.
+            //  - For every direct-field column (row 1 blank), overwrite the top-level
+            //    field named in row 6 with the cell value.
+            //  - For every captioned-attribute column (row 1 = "Attribute" with a
+            //    level_N indicator in row 3), find the matching AssetAttributes entry
+            //    and overwrite AttributeItem<suffix>.
             //  - POST the modified JSON via SaveAsset() (uses asset_save endpoint, adds
             //    'Authorization: Bearer <token>').
             var cfg = _svcConfig.GetProperty(endpoint);
@@ -605,11 +634,14 @@ namespace T1Sync
                 var lastUsed = ws.LastColumnUsed();
                 var maxCol = lastUsed?.ColumnNumber() ?? 0;
 
-                var headers = new List<(string Kind, string Header)>();
+                var headers = new List<(string Kind, string Code, string Level, string Suffix, string Header)>();
                 for (int col = 1; col <= maxCol; col++)
                 {
                     headers.Add((
                         ws.Cell(1, col).GetString() ?? "",
+                        ws.Cell(2, col).GetString() ?? "",
+                        ws.Cell(3, col).GetString() ?? "",
+                        ws.Cell(4, col).GetString() ?? "",
                         ws.Cell(6, col).GetString() ?? ""
                     ));
                 }
@@ -624,16 +656,30 @@ namespace T1Sync
                     Debug.WriteLine($"  -> {ws.Name} row {row}: saving asset {assetNumber}");
                     var asset = FetchAsset(assetNumber);
 
-                    var assetDict = JsonSerializer.Deserialize<Dictionary<string, object?>>(asset.GetRawText())!;
+                    var node = JsonNode.Parse(asset.GetRawText())!.AsObject();
 
                     for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                     {
-                        var (kind, header) = headers[colIdx];
-                        if (kind == "Attribute" || string.IsNullOrEmpty(header)) continue;
-                        assetDict[header] = ReadCellValue(ws.Cell(row, colIdx + 1));
+                        var (kind, code, level, suffix, header) = headers[colIdx];
+                        var cellValue = ReadCellValue(ws.Cell(row, colIdx + 1));
+                        var valueNode = cellValue == null ? null : JsonSerializer.SerializeToNode(cellValue);
+
+                        if (kind == "Attribute")
+                        {
+                            // Captioned attribute: needs AttributeCode + level_N + suffix.
+                            if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
+                            {
+                                SetAttributeValue(node, code, level, suffix, cellValue);
+                            }
+                            // Top-level scalar Attribute (no level) — skip.
+                        }
+                        else if (!string.IsNullOrEmpty(header))
+                        {
+                            node[header] = valueNode;
+                        }
                     }
 
-                    SaveAsset(assetDict);
+                    SaveAsset(node.ToJsonString());
                 }
             }
 

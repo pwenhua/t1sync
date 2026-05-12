@@ -5,7 +5,7 @@ import re
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 META_KEY = re.compile(r"^(AttributeItem(?:Userfield|SelectionType)\d+)_META_$")
-ROOT_FIELDS = ["AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status"]
+ROOT_FIELDS = ["AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status","OperatingStatus"]
 INVALID_SHEET_CHARS = set(":\\/?*[]")
 
 class T1Client:
@@ -282,14 +282,39 @@ class T1Client:
                 return entry.get("SearchPath", "")
         return None
 
+    @staticmethod
+    def _set_attribute_value(asset: dict, attr_code: str, level: str, suffix: str, value) -> None:
+        """Mutate asset['AssetAttributes'] in place: overwrite AttributeItem<suffix>
+        on the entry matching attr_code + level."""
+        if not level.startswith("level_"):
+            return
+        try:
+            target_level = int(level[len("level_"):])
+        except ValueError:
+            return
+        value_key = "AttributeItem" + suffix
+        for entry in asset.get("AssetAttributes", []):
+            if entry.get("AttributeCode") != attr_code:
+                continue
+            sp = entry.get("SearchPath", "")
+            entry_level = len(sp.split("\\")) if sp else 0
+            if entry_level != target_level:
+                continue
+            if value_key in entry:
+                entry[value_key] = value
+                return
+
     def save_asset_from_excel(self, endpoint: str = "save_asset") -> Path:
         """Push spreadsheet edits back to T1.
 
         For each row in [first_row, last_row] of every sheet:
         - Read AssetNumber from column 2; skip unless it's a non-empty string.
         - fetch_asset() to get the full asset JSON.
-        - For every direct-field column (row 1 blank, not 'Attribute'), overwrite
-          the top-level field named in row 6 with the cell value.
+        - For every direct-field column (row 1 blank), overwrite the top-level
+          field named in row 6 with the cell value.
+        - For every captioned-attribute column (row 1 = 'Attribute' with a
+          level_N indicator in row 3), find the matching AssetAttributes entry
+          and overwrite AttributeItem<suffix>.
         - POST the modified JSON via save_asset() (uses asset_save endpoint, adds
           'Authorization: Bearer <token>')."""
         from openpyxl import load_workbook  # lazy import
@@ -307,8 +332,11 @@ class T1Client:
 
             headers = [
                 (
-                    str(ws.cell(row=1, column=col).value or ""),
-                    str(ws.cell(row=6, column=col).value or ""),
+                    str(ws.cell(row=1, column=col).value or ""),  # kind
+                    str(ws.cell(row=2, column=col).value or ""),  # AttributeCode
+                    str(ws.cell(row=3, column=col).value or ""),  # level
+                    str(ws.cell(row=4, column=col).value or ""),  # suffix
+                    str(ws.cell(row=6, column=col).value or ""),  # header
                 )
                 for col in range(1, max_col + 1)
             ]
@@ -321,10 +349,15 @@ class T1Client:
                 print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
                 asset = self.fetch_asset(asset_number)
 
-                for col_idx, (kind, header) in enumerate(headers, start=1):
-                    if kind == "Attribute" or not header:
-                        continue
-                    asset[header] = ws.cell(row=row, column=col_idx).value
+                for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
+                    cell_value = ws.cell(row=row, column=col_idx).value
+                    if kind == "Attribute":
+                        # Captioned attribute: needs AttributeCode + level_N + suffix.
+                        if code and suffix and level.startswith("level_"):
+                            T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
+                        # Top-level scalar Attribute (no level) — skip.
+                    elif header:
+                        asset[header] = cell_value
 
                 self.save_asset(asset)
 

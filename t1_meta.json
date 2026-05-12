@@ -5,6 +5,7 @@
     "Description": "A",
     "ShortDescription": "A",
     "Status": "A",
+    "OperatingStatus": "A",
     "ASSET_TYPE": [
       "Attribute",
       "A"

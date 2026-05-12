@@ -11,11 +11,11 @@ namespace T1Sync
         {
             // TestT1Client.AssetGetTest("0100017");
             // TestT1Client.AssetSaveTest("0100017");
-            //TestT1Client.ParseMetaTest();
-            //TestT1Client.MetaLookupTest();
-            //TestT1Client.SaveMetaTest();
+            TestT1Client.ParseMetaTest();
+            TestT1Client.MetaLookupTest();
+            TestT1Client.SaveMetaTest();
             //TestT1Client.ExtractAssetTest();
-            TestT1Client.SaveAssetFromExcelTest();
+            //TestT1Client.SaveAssetFromExcelTest();
         }
     }
 }
