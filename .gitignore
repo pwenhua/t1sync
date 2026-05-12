@@ -1,5 +1,84 @@
 Form1.*
 !Form1.cs
-Program.cs
-*.csproj
-*.csproj.user
+Program.cs 
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Distribution / packaging
+build/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# =========================
+# Visual Studio / C# (WinForms)
+# =========================
+
+# Build output
+[Bb]in/
+[Oo]bj/
+
+# User-specific files
+*.csproj 
+*.user
+*.suo
+*.userosscache
+*.userprefs
+*.rsuser
+*.sln.docstates
+
+# Visual Studio cache
+.vs/
+
+# NuGet
+*.nupkg
+*.snupkg
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.assets.json
+
+# MSBuild logs
+*.binlog
+*.log
+MSBuild_Logs/
+
+# Files built by Visual Studio
+*.pdb
+*.ilk
+*.tlog
+*.tmp
+
+# Test results
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+
+# =========================
+# Editors / OS
+# =========================
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# =========================
+# Secrets / local config
+# =========================
+.env
+*.env.local
