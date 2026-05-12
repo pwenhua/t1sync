@@ -204,6 +204,7 @@ class T1Client:
         If `meta` is None, loads from t1_meta.json next to this file.
         Output path comes from svc_config['meta_file']."""
         from openpyxl import Workbook, load_workbook  # lazy import
+        from openpyxl.utils import get_column_letter  # lazy import
 
         if meta is None:
             meta_path = Path(__file__).parent / "t1_meta.json"
@@ -231,6 +232,9 @@ class T1Client:
                 ws.cell(row=3, column=col_idx, value=col_data[2])
                 ws.cell(row=4, column=col_idx, value=col_data[3])
                 ws.cell(row=5, column=col_idx, value=col_data[4])
+
+                fmt = {"N": "General", "D": "yyyy-mm-dd"}.get(col_data[3], "@")
+                ws.column_dimensions[get_column_letter(col_idx)].number_format = fmt
 
         if not wb.sheetnames:
             wb.create_sheet(title="Sheet")

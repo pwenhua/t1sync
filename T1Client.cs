@@ -454,6 +454,14 @@ namespace T1Sync
                     ws.Cell(3, i + 1).Value = colData.Item3;
                     ws.Cell(4, i + 1).Value = colData.Item4;
                     ws.Cell(5, i + 1).Value = colData.Item5;
+
+                    var format = colData.Item4 switch
+                    {
+                        "N" => "General",
+                        "D" => "yyyy-mm-dd",
+                        _   => "@",
+                    };
+                    ws.Column(i + 1).Style.NumberFormat.Format = format;
                 }
             }
 
