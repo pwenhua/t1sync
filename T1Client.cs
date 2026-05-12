@@ -1,4 +1,4 @@
-// #define USE_CLOSEDXML // Uncomment this and install ClosedXML NuGet package to enable SaveMetaToExcel
+#define USE_CLOSEDXML
 
 // T1Client.cs - C# port of T1Client.py (synchronous)
 //
@@ -535,8 +535,7 @@ namespace T1Sync
             }
             return null;
         }
-
-#if USE_CLOSEDXML
+         
         private static void SetCellValue(IXLCell cell, object? value)
         {
             switch (value)
@@ -551,12 +550,10 @@ namespace T1Sync
                 case DateTime dt: cell.Value = dt; break;
                 default: cell.Value = value.ToString() ?? ""; break;
             }
-        }
-#endif
+        } 
 
         public string ExtractAsset(string endpoint = "extract_asset")
         {
-#if USE_CLOSEDXML
             var cfg = _svcConfig.GetProperty(endpoint);
             var xlsxPath = cfg.GetProperty("file").GetString()!;
             var firstRow = cfg.GetProperty("first_row").GetInt32();
@@ -603,13 +600,6 @@ namespace T1Sync
             wb.Save();
             Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
             return xlsxPath;
-#else
-            throw new NotImplementedException(
-                "ExtractAsset requires the ClosedXML NuGet package. " +
-                "To enable it, install ClosedXML and uncomment '#define USE_CLOSEDXML' " +
-                "at the top of T1Client.cs (or add it to your project properties)."
-            );
-#endif
         }
     }
 }
