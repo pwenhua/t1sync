@@ -85,7 +85,7 @@ namespace T1Sync
         {
             if (_token != null && !forceRefresh) return _token;
 
-            var tokenCfg = _svcConfig.GetProperty("get_token");
+            var tokenCfg = _svcConfig.GetProperty("ep_get_token");
             var baseUrl = _svcConfig.GetProperty("base_url").GetString()!.TrimEnd('/') + "/";
             var url = baseUrl + tokenCfg.GetProperty("url").GetString()!.TrimStart('/');
             var method = (tokenCfg.TryGetProperty("method", out var m) ? m.GetString() : "POST")!.ToUpperInvariant();
@@ -110,7 +110,7 @@ namespace T1Sync
             return _token!;
         }
 
-        public JsonElement FetchAsset(string testId, string endpoint = "asset_get")
+        public JsonElement FetchAsset(string testId, string endpoint = "ep_asset_get")
         {
             var ep = _svcConfig.GetProperty(endpoint);
             var baseUrl = _svcConfig.GetProperty("base_url").GetString()!.TrimEnd('/') + "/";
@@ -144,7 +144,7 @@ namespace T1Sync
             }
         }
 
-        public JsonElement SaveAsset(object payload, string endpoint = "asset_save")
+        public JsonElement SaveAsset(object payload, string endpoint = "ep_asset_save")
         {
             var ep = _svcConfig.GetProperty(endpoint);
             var baseUrl = _svcConfig.GetProperty("base_url").GetString()!.TrimEnd('/') + "/";

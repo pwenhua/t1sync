@@ -22,7 +22,7 @@ class T1Client:
 
     def get_token(self, force_refresh: bool = False) -> str:
         if self._token is None or force_refresh:
-            token_cfg = self.svc_config.get("get_token", {})
+            token_cfg = self.svc_config.get("ep_get_token", {})
             url = self.svc_config["base_url"].rstrip("/") + "/" + token_cfg["url"].lstrip("/")
             method = token_cfg.get("method", "POST").upper()
 
@@ -41,7 +41,7 @@ class T1Client:
             
         return self._token
 
-    def fetch_asset(self, asset_number: str, endpoint: str = "asset_get") -> dict:
+    def fetch_asset(self, asset_number: str, endpoint: str = "ep_asset_get") -> dict:
         ep = self.svc_config[endpoint]
         base = self.svc_config["base_url"].rstrip("/") + "/"
         path = ep["url"].lstrip("/")
@@ -59,7 +59,7 @@ class T1Client:
         response.raise_for_status()
         return response.json()
 
-    def save_asset(self, payload: dict, endpoint: str = "asset_save") -> dict:
+    def save_asset(self, payload: dict, endpoint: str = "ep_asset_save") -> dict:
         ep = self.svc_config[endpoint]
         base = self.svc_config["base_url"].rstrip("/") + "/"
         path = ep["url"].lstrip("/")

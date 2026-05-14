@@ -2,7 +2,7 @@
     "t1ws_workshop":{
         "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",
 
-        "get_token": {
+        "ep_get_token": {
             "method": "POST",
             "url": "oauth2/access_token",
             "client_id": "maroondah-workshop_64400c8a04e7424683a76918008347",
@@ -10,12 +10,12 @@
             "grant_type":"client_credentials"
         },
 
-        "asset_get": {
+        "ep_asset_get": {
             "method": "GET",
             "url": "Api/WS/v2/Asset/Read/TP_AR/"
         },
 
-         "asset_save": {
+         "ep_asset_save": {
             "method": "POST",
             "url": "Api/WS/v2/Asset/Save"
         },
