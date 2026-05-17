@@ -363,6 +363,73 @@ class T1Client:
 
         return xlsx_path
 
+    def create_asset(self, endpoint: str = "create_asset") -> Path:
+        """Create assets from a spreadsheet using a template.
+
+        For each row in [first_row, last_row] of specified sheets,
+        sends a create request using the template and saves the resulting
+        AssetNumber and AssetRegisterName back to the spreadsheet.
+        """
+        from openpyxl import load_workbook  # lazy import
+
+        cfg = self.svc_config[endpoint]
+        xlsx_path = Path(cfg["file"])
+        first_row = int(cfg["first_row"])
+        last_row = int(cfg["last_row"])
+        
+        # Support both 'asset register' and 'asset_register'
+        asset_register = self.svc_config.get("asset_register", self.svc_config.get("asset register"))
+
+        wb = load_workbook(xlsx_path)
+
+        sheet_key = cfg.get("sheet")
+        template_id = cfg.get("template")
+
+        if not sheet_key or not template_id:
+            print("  -> Missing 'sheet' or 'template' in create_asset config.")
+            return xlsx_path
+
+        sheet_name = self._sanitize_sheet_name(sheet_key)
+        if sheet_name not in wb.sheetnames:
+            print(f"  -> Sheet {sheet_name} not found in workbook.")
+            return xlsx_path
+
+        ws = wb[sheet_name]
+        max_col = ws.max_column
+
+        headers = [
+            str(ws.cell(row=6, column=col).value or "")
+            for col in range(1, max_col + 1)
+        ]
+
+        asset_num_col = None
+        asset_reg_col = None
+        for idx, h in enumerate(headers, start=1):
+            if h == "AssetNumber":
+                asset_num_col = idx
+            elif h == "AssetRegisterName":
+                asset_reg_col = idx
+
+        for row in range(first_row, last_row + 1):
+            print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
+            
+            payload = {
+                "AssetRegisterName": asset_register,
+                "TemplateAssetNumberInternal": template_id
+            }
+
+            result = self.save_asset(payload, endpoint="ep_asset_create")
+
+            if result:
+                if asset_num_col and "AssetNumber" in result:
+                    ws.cell(row=row, column=asset_num_col, value=result["AssetNumber"])
+                if asset_reg_col and "AssetRegisterName" in result:
+                    ws.cell(row=row, column=asset_reg_col, value=result["AssetRegisterName"])
+
+        wb.save(xlsx_path)
+        print(f"Updated spreadsheet at {xlsx_path}")
+        return xlsx_path
+
     def extract_asset(self, endpoint: str = "extract_asset") -> Path:
         """Populate spreadsheet rows with live asset values.
 

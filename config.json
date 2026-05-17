@@ -15,11 +15,17 @@
             "url": "Api/WS/v2/Asset/Read/TP_AR/"
         },
 
-         "ep_asset_save": {
+        "ep_asset_save": {
             "method": "POST",
             "url": "Api/WS/v2/Asset/Save"
         },
 
+        "ep_asset_create": {
+            "method": "POST",
+            "url": "Api/WS/v2/Asset/CreateFromTemplate"
+        },
+
+        "asset register":"TP_AR",
         "extract_asset": {
             "file":"c:/temp/t1.xlsx",
             "first_row": 7,
@@ -30,6 +36,14 @@
             "file":"c:/temp/t1.xlsx",
             "first_row": 7,
             "last_row": 7
+        },
+
+        "create_asset": {
+            "file":"c:/temp/t1.xlsx",
+            "sheet":"Tree_Street Tree",
+            "first_row": 8,
+            "last_row": 8,
+            "template": "0100008"
         },
 
         "asset_meta_file":"c:/temp/t1.xlsx",
