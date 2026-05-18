@@ -154,14 +154,18 @@ class T1Client:
 
     def parse_assets_meta(self) -> dict:
         """
-        Goes through all items under 'asset_parse_meta' in the config,
+        Goes through all items under 'asset_classes' in the config,
         fetches each asset, and parses its metadata.
         """
         print("Fetching metadata from API for all configured asset types...")
         lookup = {}
-        items = self.task_config.get("asset_parse_meta", self.svc_config.get("asset_parse_meta", {}))
+        items = self.svc_config.get("asset_classes", [])
 
-        for name, test_id in items.items():
+        for item in items:
+            name = item.get("class")
+            test_id = item.get("seed")
+            if not name or not test_id:
+                continue
             print(f"  -> Processing node: '{name}'")
             asset = self.fetch_asset(test_id)
             lookup[name] = self.parse_assetitem_meta(asset)
@@ -217,7 +221,7 @@ class T1Client:
     def save_meta_to_excel(self, meta: dict | None = None) -> Path:
         """Build a spreadsheet from the meta lookup.
         If `meta` is None, loads from <service>_meta.json next to this file.
-        Output path comes from svc_config['meta_file']."""
+        Output path comes from task_config['file']."""
         from openpyxl import Workbook, load_workbook  # lazy import
         from openpyxl.utils import get_column_letter  # lazy import
 
@@ -226,7 +230,7 @@ class T1Client:
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
 
-        meta_file = self.task_config.get("asset_meta_file", self.svc_config.get("asset_meta_file", ""))
+        meta_file = self.task_config.get("file", self.svc_config.get("file", ""))
         xlsx_path = Path(meta_file)
         xlsx_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -316,7 +320,7 @@ class T1Client:
                 entry[value_key] = value
                 return
 
-    def save_asset_from_excel(self, endpoint: str = "task_update_asset") -> Path:
+    def update_asset_from_excel(self, endpoint: str = "task_update_asset") -> Path:
         """Push spreadsheet edits back to T1.
 
         For each row in [first_row, last_row] of every sheet:
@@ -358,20 +362,24 @@ class T1Client:
                 if not isinstance(asset_number, str) or not asset_number.strip():
                     continue
 
-                print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
-                asset = self.fetch_asset(asset_number)
+                try:
+                    print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
+                    asset = self.fetch_asset(asset_number)
 
-                for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
-                    cell_value = ws.cell(row=row, column=col_idx).value
-                    if kind == "Attribute":
-                        # Captioned attribute: needs AttributeCode + level_N + suffix.
-                        if code and suffix and level.startswith("level_"):
-                            T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
-                        # Top-level scalar Attribute (no level) — skip.
-                    elif header:
-                        asset[header] = cell_value
+                    for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
+                        cell_value = ws.cell(row=row, column=col_idx).value
+                        if kind == "Attribute":
+                            # Captioned attribute: needs AttributeCode + level_N + suffix.
+                            if code and suffix and level.startswith("level_"):
+                                T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
+                            # Top-level scalar Attribute (no level) — skip.
+                        elif header:
+                            asset[header] = cell_value
 
-                self.save_asset(asset)
+                    self.save_asset(asset)
+                    ws.cell(row=row, column=27, value="")
+                except Exception as e:
+                    ws.cell(row=row, column=27, value=str(e))
 
         return xlsx_path
 
@@ -396,15 +404,25 @@ class T1Client:
         wb = load_workbook(xlsx_path)
 
         sheet_key = cfg.get("sheet", self.task_config.get("sheet"))
-        template_id = cfg.get("template")
 
-        if not sheet_key or not template_id:
-            print("  -> Missing 'sheet' or 'template' in task_create_asset config.")
+        if not sheet_key:
+            print("  -> Missing 'sheet' in task_create_asset config.")
             return xlsx_path
 
         sheet_name = self._sanitize_sheet_name(sheet_key)
         if sheet_name not in wb.sheetnames:
             print(f"  -> Sheet {sheet_name} not found in workbook.")
+            return xlsx_path
+
+        target_class = sheet_key.replace("_", "\\")
+        template_id = None
+        for t in self.svc_config.get("asset_classes", []):
+            if t.get("class") in (target_class, sheet_key):
+                template_id = t.get("template")
+                break
+
+        if not template_id:
+            print(f"  -> Missing 'template' for class '{target_class}' in asset_templates.")
             return xlsx_path
 
         ws = wb[sheet_name]
@@ -424,20 +442,24 @@ class T1Client:
                 asset_reg_col = idx
 
         for row in range(first_row, last_row + 1):
-            print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
-            
-            payload = {
-                "AssetRegisterName": asset_register,
-                "TemplateAssetNumberInternal": template_id
-            }
+            try:
+                print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
+                
+                payload = {
+                    "AssetRegisterName": asset_register,
+                    "TemplateAssetNumberInternal": template_id
+                }
 
-            result = self.save_asset(payload, endpoint="ep_asset_create")
+                result = self.save_asset(payload, endpoint="ep_asset_create")
 
-            if result:
-                if asset_num_col and "AssetNumber" in result:
-                    ws.cell(row=row, column=asset_num_col, value=result["AssetNumber"])
-                if asset_reg_col and "AssetRegisterName" in result:
-                    ws.cell(row=row, column=asset_reg_col, value=result["AssetRegisterName"])
+                if result:
+                    if asset_num_col and "AssetNumber" in result:
+                        ws.cell(row=row, column=asset_num_col, value=result["AssetNumber"])
+                    if asset_reg_col and "AssetRegisterName" in result:
+                        ws.cell(row=row, column=asset_reg_col, value=result["AssetRegisterName"])
+                ws.cell(row=row, column=27, value="")
+            except Exception as e:
+                ws.cell(row=row, column=27, value=str(e))
 
         wb.save(xlsx_path)
         print(f"Updated spreadsheet at {xlsx_path}")
@@ -477,13 +499,17 @@ class T1Client:
                 asset_number = ws.cell(row=row, column=2).value
                 if asset_number in (None, ""):
                     continue
-                print(f"  -> {sheet_name} row {row}: fetching asset {asset_number}")
-                asset = self.fetch_asset(str(asset_number))
+                try:
+                    print(f"  -> {sheet_name} row {row}: fetching asset {asset_number}")
+                    asset = self.fetch_asset(str(asset_number))
 
-                for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
-                    value = T1Client._extract_value(asset, attr_code, level, suffix, header)
-                    if value is not None:
-                        ws.cell(row=row, column=col_idx, value=value)
+                    for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
+                        value = T1Client._extract_value(asset, attr_code, level, suffix, header)
+                        if value is not None:
+                            ws.cell(row=row, column=col_idx, value=value)
+                    ws.cell(row=row, column=27, value="")
+                except Exception as e:
+                    ws.cell(row=row, column=27, value=str(e))
 
         wb.save(xlsx_path)
         print(f"Updated spreadsheet at {xlsx_path}")

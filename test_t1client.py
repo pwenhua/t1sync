@@ -62,7 +62,7 @@ def meta_lookup_test():
             print(f"  - Node: {key} = {val!r}")
 
 
-def save_meta_test():
+def save_meta_to_excel_test():
     print("Testing save_meta_to_excel...")
     client = T1Client()
     path = client.save_meta_to_excel()
@@ -76,10 +76,10 @@ def extract_asset_test():
     print(f"Spreadsheet updated: {path}")
 
 
-def save_asset_from_excel_test():
-    print("Testing save_asset_from_excel...")
+def update_asset_from_excel_test():
+    print("Testing update_asset_from_excel...")
     client = T1Client()
-    path = client.save_asset_from_excel()
+    path = client.update_asset_from_excel()
     print(f"Pushed rows from spreadsheet: {path}")
 
 
@@ -93,9 +93,9 @@ def create_asset_test():
 if __name__ == "__main__":
     # asset_get_test('0100017')
     # asset_save_test('0100017')
-    parse_meta_test()
+    # parse_meta_test()
     # meta_lookup_test()
-    # save_meta_test()
-    # extract_asset_test()
-    # save_asset_from_excel_test()
+    # save_meta_to_excel_test()
+    extract_asset_test()
+    # update_asset_from_excel_test()
     # create_asset_test()

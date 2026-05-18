@@ -30,7 +30,6 @@ namespace T1Sync
     public class T1Client
     {
         public const string DefaultConfigPath = @"..\..\..\config.json";
-        public const string DefaultMetaPath = @"..\..\..\t1_meta.json";
 
         private static readonly HttpClient Http = CreateClient();
         private static readonly Regex MetaKeyRegex = new Regex(
@@ -44,6 +43,7 @@ namespace T1Sync
 
         public string Service { get; }
         public string ConfigPath { get; }
+        public string MetaPath => $@"..\..\..\{Service}_meta.json";
         public JsonElement SvcConfig => _svcConfig;
         public JsonElement TaskConfig => _taskConfig;
 
@@ -316,48 +316,48 @@ namespace T1Sync
             return result;
         }
 
+        public Dictionary<string, object> ParseAssetsMeta()
+        {
+            Debug.WriteLine("Fetching metadata from API for all configured asset types...");
+            var lookup = new Dictionary<string, object>();
+
+            if (_svcConfig.TryGetProperty("asset_classes", out var items) && items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in items.EnumerateArray())
+                {
+                    var name = item.TryGetProperty("class", out var clsProp) ? clsProp.GetString() : null;
+                    var testId = item.TryGetProperty("seed", out var anProp) ? anProp.GetString() : null;
+                    if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(testId)) continue;
+
+                    Debug.WriteLine($"  -> Processing node: '{name}'");
+                    var asset = FetchAsset(testId);
+                    lookup[name] = ParseAssetItemMeta(asset);
+                }
+            }
+            return lookup;
+        }
+
         public Dictionary<string, object> GetMetaLookup(bool forceRefresh = false)
         {
-            var lookupPath = DefaultMetaPath;
+            var lookupPath = MetaPath;
 
             if (!forceRefresh && File.Exists(lookupPath))
-            {
-                var json = File.ReadAllText(lookupPath, Encoding.UTF8);
-                return JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
-            }
-
-            Debug.WriteLine("Fetching metadata from API...");
-            var lookup = new Dictionary<string, object>();
-            if (File.Exists(lookupPath))
             {
                 try
                 {
                     var json = File.ReadAllText(lookupPath, Encoding.UTF8);
-                    var existing = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-                    if (existing != null) lookup = existing;
+                    return JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
                 }
-                catch
+                catch (Exception ex) when (ex is JsonException || ex is IOException)
                 {
-                    // ignore malformed file
+                    Debug.WriteLine($"Could not read meta lookup cache, forcing refresh: {ex.Message}");
                 }
             }
 
-            if (_svcConfig.TryGetProperty("asset_parse_meta", out var items))
-            {
-                var options = new JsonSerializerOptions { WriteIndented = true };
-                foreach (var prop in items.EnumerateObject())
-                {
-                    var name = prop.Name;
-                    var testId = prop.Value.GetString();
-                    if (testId == null) continue;
+            var lookup = ParseAssetsMeta();
 
-                    Debug.WriteLine($"  -> Processing node: '{name}'");
-                    var asset = FetchAsset(testId);
-                    lookup[name] = ParseAssetMeta(asset);
-
-                    File.WriteAllText(lookupPath, JsonSerializer.Serialize(lookup, options), Encoding.UTF8);
-                }
-            }
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(lookupPath, JsonSerializer.Serialize(lookup, options), Encoding.UTF8);
 
             Debug.WriteLine($"Saved metadata lookup to {lookupPath}");
             return lookup;
@@ -436,7 +436,7 @@ namespace T1Sync
 #if USE_CLOSEDXML
             if (meta == null)
             {
-                var metaPath = DefaultMetaPath;
+                var metaPath = MetaPath;
                 if (!File.Exists(metaPath))
                     throw new FileNotFoundException($"Metadata file not found: {metaPath}");
 
@@ -444,7 +444,10 @@ namespace T1Sync
                 meta = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonText);
             }
 
-            var xlsxPath = _svcConfig.GetProperty("asset_meta_file").GetString()!;
+            var fileProp = _taskConfig.ValueKind != JsonValueKind.Undefined && _taskConfig.TryGetProperty("file", out var tfp) 
+                ? tfp 
+                : _svcConfig.GetProperty("file");
+            var xlsxPath = fileProp.GetString()!;
             var dir = Path.GetDirectoryName(xlsxPath);
             if (!string.IsNullOrEmpty(dir))
             {
@@ -664,33 +667,41 @@ namespace T1Sync
                     var assetNumber = assetCell.GetString();
                     if (string.IsNullOrWhiteSpace(assetNumber)) continue;
 
-                    Debug.WriteLine($"  -> {ws.Name} row {row}: saving asset {assetNumber}");
-                    var asset = FetchAsset(assetNumber);
-
-                    var node = JsonNode.Parse(asset.GetRawText())!.AsObject();
-
-                    for (int colIdx = 0; colIdx < headers.Count; colIdx++)
+                    try
                     {
-                        var (kind, code, level, suffix, header) = headers[colIdx];
-                        var cellValue = ReadCellValue(ws.Cell(row, colIdx + 1));
-                        var valueNode = cellValue == null ? null : JsonSerializer.SerializeToNode(cellValue);
+                        Debug.WriteLine($"  -> {ws.Name} row {row}: saving asset {assetNumber}");
+                        var asset = FetchAsset(assetNumber);
 
-                        if (kind == "Attribute")
+                        var node = JsonNode.Parse(asset.GetRawText())!.AsObject();
+
+                        for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                         {
-                            // Captioned attribute: needs AttributeCode + level_N + suffix.
-                            if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
+                            var (kind, code, level, suffix, header) = headers[colIdx];
+                            var cellValue = ReadCellValue(ws.Cell(row, colIdx + 1));
+                            var valueNode = cellValue == null ? null : JsonSerializer.SerializeToNode(cellValue);
+
+                            if (kind == "Attribute")
                             {
-                                SetAttributeValue(node, code, level, suffix, cellValue);
+                                // Captioned attribute: needs AttributeCode + level_N + suffix.
+                                if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
+                                {
+                                    SetAttributeValue(node, code, level, suffix, cellValue);
+                                }
+                                // Top-level scalar Attribute (no level) — skip.
                             }
-                            // Top-level scalar Attribute (no level) — skip.
+                            else if (!string.IsNullOrEmpty(header))
+                            {
+                                node[header] = valueNode;
+                            }
                         }
-                        else if (!string.IsNullOrEmpty(header))
-                        {
-                            node[header] = valueNode;
-                        }
-                    }
 
-                    SaveAsset(node.ToJsonString());
+                        SaveAsset(node.ToJsonString());
+                        ws.Cell(row, "AA").Value = "";
+                    }
+                    catch (Exception ex)
+                    {
+                        ws.Cell(row, "AA").Value = ex.Message;
+                    }
                 }
             }
 
@@ -728,17 +739,25 @@ namespace T1Sync
                     var assetNumber = ws.Cell(row, 2).GetString();
                     if (string.IsNullOrEmpty(assetNumber)) continue;
 
-                    Debug.WriteLine($"  -> {ws.Name} row {row}: fetching asset {assetNumber}");
-                    var asset = FetchAsset(assetNumber);
-
-                    for (int colIdx = 0; colIdx < headers.Count; colIdx++)
+                    try
                     {
-                        var (attrCode, level, suffix, _, header) = headers[colIdx];
-                        var val = ExtractValue(asset, attrCode, level, suffix, header);
-                        if (val != null)
+                        Debug.WriteLine($"  -> {ws.Name} row {row}: fetching asset {assetNumber}");
+                        var asset = FetchAsset(assetNumber);
+
+                        for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                         {
-                            SetCellValue(ws.Cell(row, colIdx + 1), val);
+                            var (attrCode, level, suffix, _, header) = headers[colIdx];
+                            var val = ExtractValue(asset, attrCode, level, suffix, header);
+                            if (val != null)
+                            {
+                                SetCellValue(ws.Cell(row, colIdx + 1), val);
+                            }
                         }
+                        ws.Cell(row, "AA").Value = "";
+                    }
+                    catch (Exception ex)
+                    {
+                        ws.Cell(row, "AA").Value = ex.Message;
                     }
                 }
             }
@@ -756,20 +775,24 @@ namespace T1Sync
             var lastRow = cfg.GetProperty("last_row").GetInt32();
 
             string? assetRegister = null;
-            if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
-                _svcConfig.TryGetProperty("asset register", out arProp))
+            if (_taskConfig.ValueKind != JsonValueKind.Undefined && 
+               (_taskConfig.TryGetProperty("asset_register", out var tarProp) || _taskConfig.TryGetProperty("asset register", out tarProp)))
+            {
+                assetRegister = tarProp.GetString();
+            }
+            else if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
+                     _svcConfig.TryGetProperty("asset register", out arProp))
             {
                 assetRegister = arProp.GetString();
             }
 
             using var wb = new XLWorkbook(xlsxPath);
 
-            var sheetKey = cfg.TryGetProperty("sheet", out var shProp) ? shProp.GetString() : null;
-            var templateId = cfg.TryGetProperty("template", out var tmplProp) ? tmplProp.GetString() : null;
+            var sheetKey = cfg.TryGetProperty("sheet", out var shProp) ? shProp.GetString() : (_taskConfig.ValueKind != JsonValueKind.Undefined && _taskConfig.TryGetProperty("sheet", out var tshProp) ? tshProp.GetString() : null);
 
-            if (string.IsNullOrEmpty(sheetKey) || string.IsNullOrEmpty(templateId))
+            if (string.IsNullOrEmpty(sheetKey))
             {
-                Debug.WriteLine("  -> Missing 'sheet' or 'template' in create_asset config.");
+                Debug.WriteLine("  -> Missing 'sheet' in create_asset config.");
                 return xlsxPath;
             }
 
@@ -777,6 +800,27 @@ namespace T1Sync
             if (!wb.Worksheets.Contains(sheetName))
             {
                 Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
+                return xlsxPath;
+            }
+
+            string? templateId = null;
+            var targetClass = sheetKey.Replace("_", "\\");
+            if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var t in templates.EnumerateArray())
+                {
+                    var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
+                    if (cls == targetClass || cls == sheetKey)
+                    {
+                        templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
+                        break;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(templateId))
+            {
+                Debug.WriteLine($"  -> Missing 'template' for class '{targetClass}' in asset_templates.");
                 return xlsxPath;
             }
 
@@ -800,23 +844,31 @@ namespace T1Sync
 
             for (int row = firstRow; row <= lastRow; row++)
             {
-                Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
-
-                var payload = new Dictionary<string, string?>
+                try
                 {
-                    ["AssetRegisterName"] = assetRegister,
-                    ["TemplateAssetNumberInternal"] = templateId
-                };
+                    Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
 
-                var result = SaveAsset(payload, "ep_asset_create");
+                    var payload = new Dictionary<string, string?>
+                    {
+                        ["AssetRegisterName"] = assetRegister,
+                        ["TemplateAssetNumberInternal"] = templateId
+                    };
 
-                if (assetNumCol.HasValue && result.TryGetProperty("AssetNumber", out var anProp))
-                {
-                    SetCellValue(ws.Cell(row, assetNumCol.Value), JsonElementToValue(anProp));
+                    var result = SaveAsset(payload, "ep_asset_create");
+
+                    if (assetNumCol.HasValue && result.TryGetProperty("AssetNumber", out var anProp))
+                    {
+                        SetCellValue(ws.Cell(row, assetNumCol.Value), JsonElementToValue(anProp));
+                    }
+                    if (assetRegCol.HasValue && result.TryGetProperty("AssetRegisterName", out var arNameProp))
+                    {
+                        SetCellValue(ws.Cell(row, assetRegCol.Value), JsonElementToValue(arNameProp));
+                    }
+                    ws.Cell(row, "AA").Value = "";
                 }
-                if (assetRegCol.HasValue && result.TryGetProperty("AssetRegisterName", out var arNameProp))
+                catch (Exception ex)
                 {
-                    SetCellValue(ws.Cell(row, assetRegCol.Value), JsonElementToValue(arNameProp));
+                    ws.Cell(row, "AA").Value = ex.Message;
                 }
             }
 
