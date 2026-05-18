@@ -50,18 +50,6 @@ def parse_meta_test():
     print(f"Saved parsed metadata to {meta_path}")
 
 
-def meta_lookup_test():
-    print("Testing get_meta_lookup...")
-    client = T1Client()
-    lookup = client.get_meta_lookup(force_refresh=True)
-    print(f"Lookup generated with {len(lookup)} nodes.")
-    for key, val in lookup.items():
-        if isinstance(val, dict):
-            print(f"  - Node: {key}, Entries: {len(val)}")
-        else:
-            print(f"  - Node: {key} = {val!r}")
-
-
 def save_meta_to_excel_test():
     print("Testing save_meta_to_excel...")
     client = T1Client()
@@ -93,8 +81,7 @@ def create_asset_test():
 if __name__ == "__main__":
     # asset_get_test('0100017')
     # asset_save_test('0100017')
-    # parse_meta_test()
-    # meta_lookup_test()
+    parse_meta_test()
     # save_meta_to_excel_test()
     extract_asset_test()
     # update_asset_from_excel_test()

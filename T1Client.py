@@ -172,29 +172,6 @@ class T1Client:
         
         return lookup
 
-    def get_meta_lookup(self, force_refresh: bool = False) -> dict:
-        """
-        Returns the metadata lookup table from cache (<service>_meta.json).
-        If the cache is missing or force_refresh is True, it rebuilds the cache
-        by fetching from the API and saves it.
-        """
-        lookup_path = Path(__file__).parent / f"{self.service}_meta.json"
-        
-        if not force_refresh and lookup_path.exists():
-            try:
-                with lookup_path.open("r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                print("Could not read meta lookup cache, forcing refresh.")
-
-        lookup = self.parse_assets_meta()
-            
-        with lookup_path.open("w", encoding="utf-8") as f:
-            json.dump(lookup, f, indent=2, ensure_ascii=False)
-                
-        print(f"Saved metadata lookup to {lookup_path}")
-        return lookup
-
     @staticmethod
     def _sanitize_sheet_name(name: str) -> str:
         cleaned = "".join("_" if ch in INVALID_SHEET_CHARS else ch for ch in name)
