@@ -304,7 +304,7 @@ class T1Client:
                 entry[value_key] = value
                 return
 
-    def save_asset_from_excel(self, endpoint: str = "save_asset") -> Path:
+    def save_asset_from_excel(self, endpoint: str = "task_update_asset") -> Path:
         """Push spreadsheet edits back to T1.
 
         For each row in [first_row, last_row] of every sheet:
@@ -363,7 +363,7 @@ class T1Client:
 
         return xlsx_path
 
-    def create_asset(self, endpoint: str = "create_asset") -> Path:
+    def create_asset(self, endpoint: str = "task_create_asset") -> Path:
         """Create assets from a spreadsheet using a template.
 
         For each row in [first_row, last_row] of specified sheets,
@@ -386,7 +386,7 @@ class T1Client:
         template_id = cfg.get("template")
 
         if not sheet_key or not template_id:
-            print("  -> Missing 'sheet' or 'template' in create_asset config.")
+            print("  -> Missing 'sheet' or 'template' in task_create_asset config.")
             return xlsx_path
 
         sheet_name = self._sanitize_sheet_name(sheet_key)
@@ -430,7 +430,7 @@ class T1Client:
         print(f"Updated spreadsheet at {xlsx_path}")
         return xlsx_path
 
-    def extract_asset(self, endpoint: str = "extract_asset") -> Path:
+    def extract_asset(self, endpoint: str = "task_extract_asset") -> Path:
         """Populate spreadsheet rows with live asset values.
 
         For each row in [first_row, last_row] of every sheet in the workbook,
@@ -475,4 +475,3 @@ class T1Client:
         wb.save(xlsx_path)
         print(f"Updated spreadsheet at {xlsx_path}")
         return xlsx_path
-

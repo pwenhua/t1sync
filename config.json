@@ -26,19 +26,19 @@
         },
 
         "asset register":"TP_AR",
-        "extract_asset": {
+        "task_extract_asset": {
             "file":"c:/temp/t1.xlsx",
             "first_row": 7,
             "last_row": 7
         },
 
-        "save_asset": {
+        "task_update_asset": {
             "file":"c:/temp/t1.xlsx",
             "first_row": 7,
             "last_row": 7
         },
 
-        "create_asset": {
+        "task_create_asset": {
             "file":"c:/temp/t1.xlsx",
             "sheet":"Tree_Street Tree",
             "first_row": 8,

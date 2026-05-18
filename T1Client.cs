@@ -687,7 +687,7 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string ExtractAsset(string endpoint = "extract_asset")
+        public string ExtractAsset(string endpoint = "task_extract_asset")
         {
             var cfg = _svcConfig.GetProperty(endpoint);
             var xlsxPath = cfg.GetProperty("file").GetString()!;
@@ -737,7 +737,7 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string CreateAsset(string endpoint = "create_asset")
+        public string CreateAsset(string endpoint = "task_create_asset")
         {
             var cfg = _svcConfig.GetProperty(endpoint);
             var xlsxPath = cfg.GetProperty("file").GetString()!;
@@ -758,7 +758,7 @@ namespace T1Sync
 
             if (string.IsNullOrEmpty(sheetKey) || string.IsNullOrEmpty(templateId))
             {
-                Debug.WriteLine("  -> Missing 'sheet' or 'template' in create_asset config.");
+                Debug.WriteLine("  -> Missing 'sheet' or 'template' in task_create_asset config.");
                 return xlsxPath;
             }
 
