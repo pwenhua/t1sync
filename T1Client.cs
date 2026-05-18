@@ -45,17 +45,28 @@ namespace T1Sync
         public string Service { get; }
         public string ConfigPath { get; }
         public JsonElement SvcConfig => _svcConfig;
+        public JsonElement TaskConfig => _taskConfig;
 
         private readonly JsonElement _config;
         private readonly JsonElement _svcConfig;
+        private readonly JsonElement _taskConfig;
         private string? _token;
 
-        public T1Client(string service = "t1ws_workshop", string configPath = DefaultConfigPath)
+        public T1Client(string? service = null, string configPath = DefaultConfigPath)
         {
-            Service = service;
             ConfigPath = configPath;
             _config = LoadConfig(configPath);
-            _svcConfig = _config.GetProperty(service);
+            if (_config.TryGetProperty("task", out var task)) _taskConfig = task;
+
+            if (string.IsNullOrEmpty(service))
+            {
+                if (_taskConfig.ValueKind != JsonValueKind.Undefined && _taskConfig.TryGetProperty("t1client", out var t1ClientProp))
+                    service = t1ClientProp.GetString();
+            }
+
+            Service = service ?? throw new ArgumentException("Service name must be provided or specified in config task.t1client.");
+            
+            _svcConfig = _config.TryGetProperty("t1ws", out var t1ws) && t1ws.TryGetProperty(Service, out var svc) ? svc : _config.GetProperty(Service);
         }
 
         private static HttpClient CreateClient()
@@ -195,7 +206,7 @@ namespace T1Sync
             return value.ValueKind == JsonValueKind.Number ? "N" : "A";
         }
 
-        public static Dictionary<string, object> ParseAssetMeta(JsonElement asset)
+        public static Dictionary<string, object> ParseAssetItemMeta(JsonElement asset)
         {
             // Flat schema: each AttributeCode becomes a top-level scalar (its
             // primary SearchPath's inferred dataType), and each captioned
@@ -687,7 +698,7 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string ExtractAsset(string endpoint = "task_extract_asset")
+        public string ExtractAsset(string endpoint = "extract_asset")
         {
             var cfg = _svcConfig.GetProperty(endpoint);
             var xlsxPath = cfg.GetProperty("file").GetString()!;
@@ -737,7 +748,7 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string CreateAsset(string endpoint = "task_create_asset")
+        public string CreateAsset(string endpoint = "create_asset")
         {
             var cfg = _svcConfig.GetProperty(endpoint);
             var xlsxPath = cfg.GetProperty("file").GetString()!;
@@ -758,7 +769,7 @@ namespace T1Sync
 
             if (string.IsNullOrEmpty(sheetKey) || string.IsNullOrEmpty(templateId))
             {
-                Debug.WriteLine("  -> Missing 'sheet' or 'template' in task_create_asset config.");
+                Debug.WriteLine("  -> Missing 'sheet' or 'template' in create_asset config.");
                 return xlsxPath;
             }
 

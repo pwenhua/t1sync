@@ -61,30 +61,22 @@ namespace T1Sync
 
         public static void ParseMetaTest()
         {
-            Debug.WriteLine("Testing ParseAssetMeta for all items in asset_parse_meta...");
+            Debug.WriteLine("Testing ParseAssetsMeta...");
             var client = new T1Client();
+            var lookup = client.ParseAssetsMeta();
 
-            if (client.SvcConfig.TryGetProperty("asset_parse_meta", out var items))
+            Debug.WriteLine($"Parsed metadata for {lookup.Count} asset types.");
+            foreach (var (name, parsedObj) in lookup)
             {
-                foreach (var prop in items.EnumerateObject())
+                if (parsedObj is Dictionary<string, object> parsed)
                 {
-                    var name = prop.Name;
-                    var testId = prop.Value.GetString();
-                    if (testId == null) continue;
-
-                    Debug.WriteLine($"Processing {name} (asset {testId})...");
-                    var asset = client.FetchAsset(testId);
-                    var parsed = T1Client.ParseAssetMeta(asset);
-                    Debug.WriteLine($"Parsed metadata into {parsed.Count} entries.");
+                    Debug.WriteLine($"Node '{name}' parsed into {parsed.Count} entries.");
                     foreach (var kvp in parsed)
                     {
                         switch (kvp.Value)
                         {
                             case object[] arr:
                                 Debug.WriteLine($"  - {kvp.Key} = [{string.Join(", ", arr)}]");
-                                break;
-                            case JsonElement je when je.ValueKind == JsonValueKind.Array:
-                                Debug.WriteLine($"  - {kvp.Key} = [{string.Join(", ", je.EnumerateArray().Select(e => e.ToString()))}]");
                                 break;
                             default:
                                 Debug.WriteLine($"  - {kvp.Key} = {kvp.Value}");
@@ -93,6 +85,10 @@ namespace T1Sync
                     }
                 }
             }
+            
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            System.IO.File.WriteAllText(client.MetaPath, JsonSerializer.Serialize(lookup, options), System.Text.Encoding.UTF8);
+            Debug.WriteLine($"Saved parsed metadata to {client.MetaPath}");
         }
 
         public static void MetaLookupTest()

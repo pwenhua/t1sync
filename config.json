@@ -1,7 +1,7 @@
 
 {
     "t1ws": {
-        "t1ws_workshop":{
+        "workshop":{
             "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",
             "asset register":"TP_AR",
 
@@ -30,7 +30,8 @@
         }
     },
 
-    "task": {
+    "task": {        
+        "t1client":"workshop",
         "file":"c:/temp/t1.xlsx",
         "sheet":"Tree_Street Tree",
         "first_row": 6,

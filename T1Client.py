@@ -9,13 +9,19 @@ ROOT_FIELDS = ["AssetRegisterName", "AssetNumber", "Description", "ShortDescript
 INVALID_SHEET_CHARS = set(":\\/?*[]")
 
 class T1Client:
-    def __init__(self, service: str = "t1ws_workshop", config_path: Path = CONFIG_PATH):
-        self.service = service
+    def __init__(self, service: str | None = None, config_path: Path = CONFIG_PATH):
         self.config_path = config_path
         self._token: str | None = None
         self.config = self._load_config()
-        self.svc_config = self.config.get("t1ws", {}).get(self.service, self.config.get(self.service, {}))
         self.task_config = self.config.get("task", {})
+        
+        if not service:
+            service = self.task_config.get("t1client")
+        if not service:
+            raise ValueError("Service name must be provided or specified in config task.t1client.")
+            
+        self.service = service
+        self.svc_config = self.config.get("t1ws", {}).get(self.service, self.config.get(self.service, {}))
 
     def _load_config(self) -> dict:
         with self.config_path.open("r", encoding="utf-8") as f:
@@ -92,7 +98,7 @@ class T1Client:
         return "A"
 
     @staticmethod
-    def parse_asset_meta(asset: dict) -> dict:
+    def parse_assetitem_meta(asset: dict) -> dict:
         """Flat schema: each AttributeCode becomes a top-level scalar (its SearchPath),
         and each captioned attribute becomes a top-level entry whose value is
         [AttributeCode, "level_<n>", <field-suffix>, <dataType>]."""
@@ -146,37 +152,41 @@ class T1Client:
 
         return result
 
-    def get_meta_lookup(self, force_refresh: bool = False) -> dict:
+    def parse_assets_meta(self) -> dict:
         """
-        Returns the metadata lookup table.
-        If t1_meta.json exists and force_refresh is False, loads from it.
-        Otherwise, iterates through the config, updates the metadata incrementally,
-        and saves to t1_meta.json.
+        Goes through all items under 'asset_parse_meta' in the config,
+        fetches each asset, and parses its metadata.
         """
-        lookup_path = Path(__file__).parent / "t1_meta.json"
-        
-        if not force_refresh and lookup_path.exists():
-            with lookup_path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-
-        print("Fetching metadata from API...")
+        print("Fetching metadata from API for all configured asset types...")
         lookup = {}
-        if lookup_path.exists():
-            with lookup_path.open("r", encoding="utf-8") as f:
-                try:
-                    lookup = json.load(f)
-                except json.JSONDecodeError:
-                    pass
-
         items = self.task_config.get("asset_parse_meta", self.svc_config.get("asset_parse_meta", {}))
 
         for name, test_id in items.items():
             print(f"  -> Processing node: '{name}'")
-            lookup[name] = self.parse_asset_meta(self.fetch_asset(test_id))
+            asset = self.fetch_asset(test_id)
+            lookup[name] = self.parse_assetitem_meta(asset)
+        
+        return lookup
+
+    def get_meta_lookup(self, force_refresh: bool = False) -> dict:
+        """
+        Returns the metadata lookup table from cache (<service>_meta.json).
+        If the cache is missing or force_refresh is True, it rebuilds the cache
+        by fetching from the API and saves it.
+        """
+        lookup_path = Path(__file__).parent / f"{self.service}_meta.json"
+        
+        if not force_refresh and lookup_path.exists():
+            try:
+                with lookup_path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                print("Could not read meta lookup cache, forcing refresh.")
+
+        lookup = self.parse_assets_meta()
             
-            # Save incrementally after each node is fetched
-            with lookup_path.open("w", encoding="utf-8") as f:
-                json.dump(lookup, f, indent=2, ensure_ascii=False)
+        with lookup_path.open("w", encoding="utf-8") as f:
+            json.dump(lookup, f, indent=2, ensure_ascii=False)
                 
         print(f"Saved metadata lookup to {lookup_path}")
         return lookup
@@ -206,13 +216,13 @@ class T1Client:
 
     def save_meta_to_excel(self, meta: dict | None = None) -> Path:
         """Build a spreadsheet from the meta lookup.
-        If `meta` is None, loads from t1_meta.json next to this file.
+        If `meta` is None, loads from <service>_meta.json next to this file.
         Output path comes from svc_config['meta_file']."""
         from openpyxl import Workbook, load_workbook  # lazy import
         from openpyxl.utils import get_column_letter  # lazy import
 
         if meta is None:
-            meta_path = Path(__file__).parent / "t1_meta.json"
+            meta_path = Path(__file__).parent / f"{self.service}_meta.json"
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
 

@@ -31,20 +31,23 @@ def asset_save_test(test_id: str):
 
 
 def parse_meta_test():
-    print("Testing parse_asset_meta for all items in asset_parse_meta...")
+    print("Testing parse_assets_meta...")
     client = T1Client()
-    items = client.svc_config.get("asset_parse_meta", {})
+    lookup = client.parse_assets_meta()
 
-    for name, test_id in items.items():
-        print(f"Processing {name} (asset {test_id})...")
-        asset = client.fetch_asset(test_id)
-        parsed = client.parse_asset_meta(asset)
+    print(f"Parsed metadata for {len(lookup)} asset types.")
+    for name, parsed in lookup.items():
         print(f"Parsed metadata into {len(parsed)} entries.")
         for code, bucket in parsed.items():
             if isinstance(bucket, dict):
                 print(f"  - {code}: {len(bucket)} attributes parsed.")
             else:
                 print(f"  - {code} = {bucket!r}")
+    
+    meta_path = client.config_path.parent / f"{client.service}_meta.json"
+    with meta_path.open("w", encoding="utf-8") as f:
+        json.dump(lookup, f, indent=2, ensure_ascii=False)
+    print(f"Saved parsed metadata to {meta_path}")
 
 
 def meta_lookup_test():
@@ -90,9 +93,9 @@ def create_asset_test():
 if __name__ == "__main__":
     # asset_get_test('0100017')
     # asset_save_test('0100017')
-    # parse_meta_test()
+    parse_meta_test()
     # meta_lookup_test()
     # save_meta_test()
-    extract_asset_test()
+    # extract_asset_test()
     # save_asset_from_excel_test()
     # create_asset_test()
