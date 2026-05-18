@@ -736,5 +736,82 @@ namespace T1Sync
             Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
             return xlsxPath;
         }
+
+        public string CreateAsset(string endpoint = "create_asset")
+        {
+            var cfg = _svcConfig.GetProperty(endpoint);
+            var xlsxPath = cfg.GetProperty("file").GetString()!;
+            var firstRow = cfg.GetProperty("first_row").GetInt32();
+            var lastRow = cfg.GetProperty("last_row").GetInt32();
+
+            string? assetRegister = null;
+            if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
+                _svcConfig.TryGetProperty("asset register", out arProp))
+            {
+                assetRegister = arProp.GetString();
+            }
+
+            using var wb = new XLWorkbook(xlsxPath);
+
+            var sheetKey = cfg.TryGetProperty("sheet", out var shProp) ? shProp.GetString() : null;
+            var templateId = cfg.TryGetProperty("template", out var tmplProp) ? tmplProp.GetString() : null;
+
+            if (string.IsNullOrEmpty(sheetKey) || string.IsNullOrEmpty(templateId))
+            {
+                Debug.WriteLine("  -> Missing 'sheet' or 'template' in create_asset config.");
+                return xlsxPath;
+            }
+
+            var sheetName = SanitizeSheetName(sheetKey);
+            if (!wb.Worksheets.Contains(sheetName))
+            {
+                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
+                return xlsxPath;
+            }
+
+            var ws = wb.Worksheet(sheetName);
+            var lastUsed = ws.LastColumnUsed();
+            var maxCol = lastUsed?.ColumnNumber() ?? 0;
+
+            var headers = new List<string>();
+            for (int col = 1; col <= maxCol; col++)
+            {
+                headers.Add(ws.Cell(6, col).GetString() ?? "");
+            }
+
+            int? assetNumCol = null;
+            int? assetRegCol = null;
+            for (int i = 0; i < headers.Count; i++)
+            {
+                if (headers[i] == "AssetNumber") assetNumCol = i + 1;
+                else if (headers[i] == "AssetRegisterName") assetRegCol = i + 1;
+            }
+
+            for (int row = firstRow; row <= lastRow; row++)
+            {
+                Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
+
+                var payload = new Dictionary<string, string?>
+                {
+                    ["AssetRegisterName"] = assetRegister,
+                    ["TemplateAssetNumberInternal"] = templateId
+                };
+
+                var result = SaveAsset(payload, "ep_asset_create");
+
+                if (assetNumCol.HasValue && result.TryGetProperty("AssetNumber", out var anProp))
+                {
+                    SetCellValue(ws.Cell(row, assetNumCol.Value), JsonElementToValue(anProp));
+                }
+                if (assetRegCol.HasValue && result.TryGetProperty("AssetRegisterName", out var arNameProp))
+                {
+                    SetCellValue(ws.Cell(row, assetRegCol.Value), JsonElementToValue(arNameProp));
+                }
+            }
+
+            wb.Save();
+            Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
+            return xlsxPath;
+        }
     }
 }

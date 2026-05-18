@@ -156,5 +156,20 @@ namespace T1Sync
                 Debug.WriteLine($"SaveAssetFromExcel skipped: {ex.Message}");
             }
         }
+
+        public static void CreateAssetTest()
+        {
+            Debug.WriteLine("Testing CreateAsset...");
+            var client = new T1Client();
+            try
+            {
+                var path = client.CreateAsset();
+                Debug.WriteLine($"Created assets from spreadsheet: {path}");
+            }
+            catch (NotImplementedException ex)
+            {
+                Debug.WriteLine($"CreateAsset skipped: {ex.Message}");
+            }
+        }
     }
 }
