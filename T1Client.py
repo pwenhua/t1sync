@@ -14,7 +14,8 @@ class T1Client:
         self.config_path = config_path
         self._token: str | None = None
         self.config = self._load_config()
-        self.svc_config = self.config.get(self.service, {})
+        self.svc_config = self.config.get("t1ws", {}).get(self.service, self.config.get(self.service, {}))
+        self.task_config = self.config.get("task", {})
 
     def _load_config(self) -> dict:
         with self.config_path.open("r", encoding="utf-8") as f:
@@ -167,7 +168,7 @@ class T1Client:
                 except json.JSONDecodeError:
                     pass
 
-        items = self.svc_config.get("asset_parse_meta", {})
+        items = self.task_config.get("asset_parse_meta", self.svc_config.get("asset_parse_meta", {}))
 
         for name, test_id in items.items():
             print(f"  -> Processing node: '{name}'")
@@ -215,7 +216,8 @@ class T1Client:
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
 
-        xlsx_path = Path(self.svc_config["asset_meta_file"])
+        meta_file = self.task_config.get("asset_meta_file", self.svc_config.get("asset_meta_file", ""))
+        xlsx_path = Path(meta_file)
         xlsx_path.parent.mkdir(parents=True, exist_ok=True)
 
         if xlsx_path.exists():
@@ -319,10 +321,10 @@ class T1Client:
           'Authorization: Bearer <token>')."""
         from openpyxl import load_workbook  # lazy import
 
-        cfg = self.svc_config[endpoint]
-        xlsx_path = Path(cfg["file"])
-        first_row = int(cfg["first_row"])
-        last_row = int(cfg["last_row"])
+        cfg = self.task_config.get(endpoint, self.svc_config.get(endpoint, {}))
+        xlsx_path = Path(cfg.get("file", self.task_config.get("file", "")))
+        first_row = int(cfg.get("first_row", self.task_config.get("first_row", 0)))
+        last_row = int(cfg.get("last_row", self.task_config.get("last_row", 0)))
 
         wb = load_workbook(xlsx_path)
 
@@ -372,17 +374,18 @@ class T1Client:
         """
         from openpyxl import load_workbook  # lazy import
 
-        cfg = self.svc_config[endpoint]
-        xlsx_path = Path(cfg["file"])
-        first_row = int(cfg["first_row"])
-        last_row = int(cfg["last_row"])
+        cfg = self.task_config.get(endpoint, self.svc_config.get(endpoint, {}))
+        xlsx_path = Path(cfg.get("file", self.task_config.get("file", "")))
+        first_row = int(cfg.get("first_row", self.task_config.get("first_row", 0)))
+        last_row = int(cfg.get("last_row", self.task_config.get("last_row", 0)))
         
         # Support both 'asset register' and 'asset_register'
-        asset_register = self.svc_config.get("asset_register", self.svc_config.get("asset register"))
+        asset_register = self.task_config.get("asset_register") or self.task_config.get("asset register") or \
+                         self.svc_config.get("asset_register") or self.svc_config.get("asset register")
 
         wb = load_workbook(xlsx_path)
 
-        sheet_key = cfg.get("sheet")
+        sheet_key = cfg.get("sheet", self.task_config.get("sheet"))
         template_id = cfg.get("template")
 
         if not sheet_key or not template_id:
@@ -438,10 +441,10 @@ class T1Client:
         into every column based on its 6-row header tuple (row 1 = kind)."""
         from openpyxl import load_workbook  # lazy import
 
-        cfg = self.svc_config[endpoint]
-        xlsx_path = Path(cfg["file"])
-        first_row = int(cfg["first_row"])
-        last_row = int(cfg["last_row"])
+        cfg = self.task_config.get(endpoint, self.svc_config.get(endpoint, {}))
+        xlsx_path = Path(cfg.get("file", self.task_config.get("file", "")))
+        first_row = int(cfg.get("first_row", self.task_config.get("first_row", 0)))
+        last_row = int(cfg.get("last_row", self.task_config.get("last_row", 0)))
 
         wb = load_workbook(xlsx_path)
 

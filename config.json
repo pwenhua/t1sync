@@ -1,48 +1,41 @@
+
 {
-    "t1ws_workshop":{
-        "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",
+    "t1ws": {
+        "t1ws_workshop":{
+            "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",
+            "asset register":"TP_AR",
 
-        "ep_get_token": {
-            "method": "POST",
-            "url": "oauth2/access_token",
-            "client_id": "maroondah-workshop_64400c8a04e7424683a76918008347",
-            "client_secret":"eOPJ3CxhXTCQmCEAZl7zfd0ypwpcIq4Ov/VNk6OF6ic=",
-            "grant_type":"client_credentials"
-        },
+            "ep_get_token": {
+                "method": "POST",
+                "url": "oauth2/access_token",
+                "client_id": "maroondah-workshop_64400c8a04e7424683a76918008347",
+                "client_secret":"eOPJ3CxhXTCQmCEAZl7zfd0ypwpcIq4Ov/VNk6OF6ic=",
+                "grant_type":"client_credentials"
+            },
 
-        "ep_asset_get": {
-            "method": "GET",
-            "url": "Api/WS/v2/Asset/Read/TP_AR/"
-        },
+            "ep_asset_get": {
+                "method": "GET",
+                "url": "Api/WS/v2/Asset/Read/TP_AR/"
+            },
 
-        "ep_asset_save": {
-            "method": "POST",
-            "url": "Api/WS/v2/Asset/Save"
-        },
+            "ep_asset_save": {
+                "method": "POST",
+                "url": "Api/WS/v2/Asset/Save"
+            },
 
-        "ep_asset_create": {
-            "method": "POST",
-            "url": "Api/WS/v2/Asset/CreateFromTemplate"
-        },
+            "ep_asset_create": {
+                "method": "POST",
+                "url": "Api/WS/v2/Asset/CreateFromTemplate"
+            }
+        }
+    },
 
-        "asset register":"TP_AR",
-        "task_extract_asset": {
-            "file":"c:/temp/t1.xlsx",
-            "first_row": 7,
-            "last_row": 7
-        },
-
-        "task_update_asset": {
-            "file":"c:/temp/t1.xlsx",
-            "first_row": 7,
-            "last_row": 7
-        },
-
-        "task_create_asset": {
-            "file":"c:/temp/t1.xlsx",
-            "sheet":"Tree_Street Tree",
-            "first_row": 8,
-            "last_row": 8,
+    "task": {
+        "file":"c:/temp/t1.xlsx",
+        "sheet":"Tree_Street Tree",
+        "first_row": 6,
+        "last_row": 6,
+        "task_create_asset": { 
             "template": "0100008"
         },
 
@@ -51,7 +44,7 @@
         "asset_parse_meta":{
             "Tree\\Street Tree": "0100017"
         }
-
     }
-   
+
 }
+ 

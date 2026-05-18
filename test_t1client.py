@@ -93,6 +93,6 @@ if __name__ == "__main__":
     # parse_meta_test()
     # meta_lookup_test()
     # save_meta_test()
-    # extract_asset_test()
+    extract_asset_test()
     # save_asset_from_excel_test()
-    create_asset_test()
+    # create_asset_test()
