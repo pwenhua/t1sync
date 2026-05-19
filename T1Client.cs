@@ -622,18 +622,22 @@ namespace T1Sync
             }
         }
 
-        public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow)
+        public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryRun = false)
         {
             // Sync a sheet to T1: update existing assets, create new ones for blank rows.
-            //  - If column 2 (AssetNumber) is a non-empty text cell → fetch that asset.
-            //  - If blank → POST to ep_asset_create with the sheet's template (from
-            //    svc_config['asset_classes']), then fetch the *seed* asset (also from
-            //    asset_classes) and use it as the JSON shape, patching in the new
-            //    AssetNumber/AssetRegisterName so SaveAsset targets the new asset.
-            //  - Apply each non-blank cell value:
-            //      * row-1 "Attribute" with level_N → mutate AssetAttributes.
-            //      * row-1 blank → overwrite the top-level field named in row 6.
-            //  - POST the modified JSON via SaveAsset().
+            //  1. Construct the payload first — fetch either the existing asset (when
+            //     column 2 has a non-empty AssetNumber) or the *seed* asset (when blank,
+            //     seed comes from svc_config['asset_classes']); then apply every non-blank
+            //     cell value:
+            //       * row-1 = "Attribute" with level_N in row 3 → mutate AssetAttributes.
+            //       * row-1 blank → overwrite the top-level field named in row 6.
+            //  2. Create (only if column 2 was blank) — POST to ep_asset_create with
+            //     the sheet's template; patch the new AssetNumber/AssetRegisterName onto
+            //     the constructed payload and write them back to the row.
+            //  3. Save — POST the final payload via SaveAsset() (ep_asset_save).
+            //
+            // When dryRun = true: skip steps 2 & 3 entirely and write the constructed
+            // payload to <xlsx_dir>/dry_run_<sheet>_<row>.json for review.
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
 
@@ -698,15 +702,11 @@ namespace T1Sync
                 {
                     var assetCell = ws.Cell(row, 2);
                     var assetNumber = assetCell.Value.IsText ? assetCell.GetString() : "";
+                    var isCreate = string.IsNullOrWhiteSpace(assetNumber);
 
+                    // 1. Construct payload from seed (create) or existing asset (update).
                     JsonObject node;
-                    if (!string.IsNullOrWhiteSpace(assetNumber))
-                    {
-                        Debug.WriteLine($"  -> {sheetName} row {row}: updating asset {assetNumber}");
-                        var asset = FetchAsset(assetNumber);
-                        node = JsonNode.Parse(asset.GetRawText())!.AsObject();
-                    }
-                    else
+                    if (isCreate)
                     {
                         if (string.IsNullOrEmpty(templateId))
                         {
@@ -718,32 +718,15 @@ namespace T1Sync
                             ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{targetClass}'.";
                             continue;
                         }
-
-                        Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
-                        var payload = new Dictionary<string, string?>
-                        {
-                            ["AssetRegisterName"] = assetRegister,
-                            ["TemplateAssetNumberInternal"] = templateId,
-                        };
-                        var result = SaveAsset(payload, "ep_asset_create");
-                        var newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
-                        if (string.IsNullOrEmpty(newAssetNumber))
-                        {
-                            ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
-                            continue;
-                        }
-                        var newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
-                        if (assetNumCol.HasValue) SetCellValue(ws.Cell(row, assetNumCol.Value), newAssetNumber);
-                        if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
-                        {
-                            SetCellValue(ws.Cell(row, assetRegCol.Value), newAssetRegister);
-                        }
-
-                        // Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
+                        Debug.WriteLine($"  -> {sheetName} row {row}: constructing from seed {seedId}");
                         var seedAsset = FetchAsset(seedId);
                         node = JsonNode.Parse(seedAsset.GetRawText())!.AsObject();
-                        node["AssetNumber"] = newAssetNumber;
-                        if (!string.IsNullOrEmpty(newAssetRegister)) node["AssetRegisterName"] = newAssetRegister;
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"  -> {sheetName} row {row}: constructing from existing asset {assetNumber}");
+                        var asset = FetchAsset(assetNumber);
+                        node = JsonNode.Parse(asset.GetRawText())!.AsObject();
                     }
 
                     for (int colIdx = 0; colIdx < headers.Count; colIdx++)
@@ -765,6 +748,44 @@ namespace T1Sync
                         }
                     }
 
+                    if (dryRun)
+                    {
+                        var dir = Path.GetDirectoryName(xlsxPath) ?? ".";
+                        var outName = $"dry_run_{sheetName}_{row}.json";
+                        var outPath = Path.Combine(dir, outName);
+                        File.WriteAllText(outPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+                        Debug.WriteLine($"  -> [dry-run] payload written to {outPath}");
+                        ws.Cell(row, "AA").Value = $"[dry-run] {outName}";
+                        continue;
+                    }
+
+                    // 2. Live create (only if the row had no AssetNumber).
+                    if (isCreate)
+                    {
+                        Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
+                        var createPayload = new Dictionary<string, string?>
+                        {
+                            ["AssetRegisterName"] = assetRegister,
+                            ["TemplateAssetNumberInternal"] = templateId,
+                        };
+                        var result = SaveAsset(createPayload, "ep_asset_create");
+                        var newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
+                        if (string.IsNullOrEmpty(newAssetNumber))
+                        {
+                            ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
+                            continue;
+                        }
+                        var newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
+                        node["AssetNumber"] = newAssetNumber;
+                        if (!string.IsNullOrEmpty(newAssetRegister)) node["AssetRegisterName"] = newAssetRegister;
+                        if (assetNumCol.HasValue) SetCellValue(ws.Cell(row, assetNumCol.Value), newAssetNumber);
+                        if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
+                        {
+                            SetCellValue(ws.Cell(row, assetRegCol.Value), newAssetRegister);
+                        }
+                    }
+
+                    // 3. POST the constructed payload as an update.
                     SaveAsset(node.ToJsonString());
                     ws.Cell(row, "AA").Value = "";
                 }
@@ -775,7 +796,7 @@ namespace T1Sync
             }
 
             wb.Save();
-            Debug.WriteLine($"Synced spreadsheet at {xlsxPath}");
+            Debug.WriteLine($"Synced spreadsheet at {xlsxPath}" + (dryRun ? " (dry-run, no POSTs sent)" : ""));
             return xlsxPath;
         }
 

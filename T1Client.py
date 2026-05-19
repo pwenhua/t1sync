@@ -307,19 +307,24 @@ class T1Client:
                 entry[value_key] = value
                 return
 
-    def sync_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+    def sync_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int,
+                              dry_run: bool = False) -> Path:
         """Sync a sheet to T1: update existing assets, create new ones for blank rows.
 
         For each row in [first_row, last_row] of the named sheet:
-        - If column 2 (AssetNumber) is a non-empty string → fetch that asset.
-        - If column 2 is blank → POST to ep_asset_create with the sheet's template
-          (from svc_config['asset_classes']), then fetch the **seed** asset (also
-          from asset_classes) and use it as the JSON shape, patching in the new
-          AssetNumber/AssetRegisterName so save_asset() targets the new asset.
-        - Apply each non-blank cell value to the asset:
-            * row-1 = 'Attribute' with level_N in row 3 → mutate AssetAttributes.
-            * row-1 blank → overwrite the top-level field named in row 6.
-        - POST the modified JSON via save_asset()."""
+        1. **Construct the payload first** — fetch either the existing asset (when
+           column 2 has a non-empty AssetNumber) or the **seed** asset (when blank,
+           seed comes from svc_config['asset_classes']); then apply every non-blank
+           cell value:
+              * row-1 = 'Attribute' with level_N in row 3 → mutate AssetAttributes.
+              * row-1 blank → overwrite the top-level field named in row 6.
+        2. **Create** (only if column 2 was blank) — POST to ep_asset_create with
+           the sheet's template; patch the new AssetNumber/AssetRegisterName onto
+           the constructed payload and write them back to the row.
+        3. **Save** — POST the final payload via save_asset() (ep_asset_save).
+
+        When `dry_run=True`: skip steps 2 & 3 entirely and write the constructed
+        payload to `<xlsx_dir>/dry_run_<sheet>_<row>.json` for review."""
         from openpyxl import load_workbook  # lazy import
 
         xlsx_path = Path(file)
@@ -365,39 +370,21 @@ class T1Client:
         for row in range(first_row, last_row + 1):
             try:
                 asset_number = ws.cell(row=row, column=2).value
+                is_create = not (isinstance(asset_number, str) and asset_number.strip())
 
-                if isinstance(asset_number, str) and asset_number.strip():
-                    print(f"  -> {sheet_name} row {row}: updating asset {asset_number}")
-                    asset = self.fetch_asset(asset_number)
-                else:
+                # 1. Construct payload from seed (create) or existing asset (update).
+                if is_create:
                     if not template_id:
                         ws.cell(row=row, column=27, value=f"Missing 'template' for class '{target_class}'.")
                         continue
                     if not seed_id:
                         ws.cell(row=row, column=27, value=f"Missing 'seed' for class '{target_class}'.")
                         continue
-
-                    print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
-                    payload = {
-                        "AssetRegisterName": asset_register,
-                        "TemplateAssetNumberInternal": template_id,
-                    }
-                    result = self.save_asset(payload, endpoint="ep_asset_create")
-                    new_asset_number = result.get("AssetNumber") if isinstance(result, dict) else None
-                    if not new_asset_number:
-                        ws.cell(row=row, column=27, value="Create returned no AssetNumber.")
-                        continue
-                    new_asset_register = (result.get("AssetRegisterName") if isinstance(result, dict) else None) or asset_register
-                    if asset_num_col:
-                        ws.cell(row=row, column=asset_num_col, value=new_asset_number)
-                    if asset_reg_col and new_asset_register:
-                        ws.cell(row=row, column=asset_reg_col, value=new_asset_register)
-
-                    # Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
+                    print(f"  -> {sheet_name} row {row}: constructing from seed {seed_id}")
                     asset = self.fetch_asset(seed_id)
-                    asset["AssetNumber"] = new_asset_number
-                    if new_asset_register:
-                        asset["AssetRegisterName"] = new_asset_register
+                else:
+                    print(f"  -> {sheet_name} row {row}: constructing from existing asset {asset_number}")
+                    asset = self.fetch_asset(asset_number)
 
                 for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
                     cell_value = ws.cell(row=row, column=col_idx).value
@@ -409,13 +396,43 @@ class T1Client:
                     elif header:
                         asset[header] = cell_value
 
+                if dry_run:
+                    out_path = xlsx_path.parent / f"dry_run_{sheet_name}_{row}.json"
+                    with out_path.open("w", encoding="utf-8") as f:
+                        json.dump(asset, f, indent=2, ensure_ascii=False)
+                    print(f"  -> [dry-run] payload written to {out_path}")
+                    ws.cell(row=row, column=27, value=f"[dry-run] {out_path.name}")
+                    continue
+
+                # 2. Live create (only if the row had no AssetNumber).
+                if is_create:
+                    print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
+                    create_payload = {
+                        "AssetRegisterName": asset_register,
+                        "TemplateAssetNumberInternal": template_id,
+                    }
+                    result = self.save_asset(create_payload, endpoint="ep_asset_create")
+                    new_asset_number = result.get("AssetNumber") if isinstance(result, dict) else None
+                    if not new_asset_number:
+                        ws.cell(row=row, column=27, value="Create returned no AssetNumber.")
+                        continue
+                    new_asset_register = (result.get("AssetRegisterName") if isinstance(result, dict) else None) or asset_register
+                    asset["AssetNumber"] = new_asset_number
+                    if new_asset_register:
+                        asset["AssetRegisterName"] = new_asset_register
+                    if asset_num_col:
+                        ws.cell(row=row, column=asset_num_col, value=new_asset_number)
+                    if asset_reg_col and new_asset_register:
+                        ws.cell(row=row, column=asset_reg_col, value=new_asset_register)
+
+                # 3. POST the constructed payload as an update.
                 self.save_asset(asset)
                 ws.cell(row=row, column=27, value="")
             except Exception as e:
                 ws.cell(row=row, column=27, value=str(e))
 
         wb.save(xlsx_path)
-        print(f"Synced spreadsheet at {xlsx_path}")
+        print(f"Synced spreadsheet at {xlsx_path}" + (" (dry-run, no POSTs sent)" if dry_run else ""))
         return xlsx_path
 
     def extract_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
