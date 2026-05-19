@@ -155,7 +155,8 @@ class T1Client:
     def parse_assets_meta(self) -> dict:
         """
         Goes through all items under 'asset_classes' in the config,
-        fetches each asset, and parses its metadata.
+        fetches each asset, parses its metadata, and saves the result
+        to <service>.json next to config.json.
         """
         print("Fetching metadata from API for all configured asset types...")
         lookup = {}
@@ -169,7 +170,12 @@ class T1Client:
             print(f"  -> Processing node: '{name}'")
             asset = self.fetch_asset(test_id)
             lookup[name] = self.parse_assetitem_meta(asset)
-        
+
+        meta_path = self.config_path.parent / f"{self.service}.json"
+        with meta_path.open("w", encoding="utf-8") as f:
+            json.dump(lookup, f, indent=2, ensure_ascii=False)
+        print(f"Saved parsed metadata to {meta_path}")
+
         return lookup
 
     @staticmethod
@@ -197,13 +203,13 @@ class T1Client:
 
     def save_meta_to_excel(self, meta: dict | None = None) -> Path:
         """Build a spreadsheet from the meta lookup.
-        If `meta` is None, loads from <service>_meta.json next to this file.
+        If `meta` is None, loads from <service>.json next to this file.
         Output path comes from task_config['file']."""
         from openpyxl import Workbook, load_workbook  # lazy import
         from openpyxl.utils import get_column_letter  # lazy import
 
         if meta is None:
-            meta_path = Path(__file__).parent / f"{self.service}_meta.json"
+            meta_path = Path(__file__).parent / f"{self.service}.json"
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
 

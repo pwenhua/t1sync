@@ -43,7 +43,7 @@ namespace T1Sync
 
         public string Service { get; }
         public string ConfigPath { get; }
-        public string MetaPath => $@"..\..\..\{Service}_meta.json";
+        public string MetaPath => $@"..\..\..\{Service}.json";
         public JsonElement SvcConfig => _svcConfig;
         public JsonElement TaskConfig => _taskConfig;
 
@@ -334,6 +334,11 @@ namespace T1Sync
                     lookup[name] = ParseAssetItemMeta(asset);
                 }
             }
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(MetaPath, JsonSerializer.Serialize(lookup, options), Encoding.UTF8);
+            Debug.WriteLine($"Saved parsed metadata to {MetaPath}");
+
             return lookup;
         }
 
@@ -354,13 +359,7 @@ namespace T1Sync
                 }
             }
 
-            var lookup = ParseAssetsMeta();
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(lookupPath, JsonSerializer.Serialize(lookup, options), Encoding.UTF8);
-
-            Debug.WriteLine($"Saved metadata lookup to {lookupPath}");
-            return lookup;
+            return ParseAssetsMeta();
         }
 
         private static string SanitizeSheetName(string name)
