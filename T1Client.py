@@ -307,19 +307,18 @@ class T1Client:
                 entry[value_key] = value
                 return
 
-    def update_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
-        """Push spreadsheet edits back to T1 for one sheet.
+    def sync_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+        """Sync a sheet to T1: update existing assets, create new ones for blank rows.
 
-        For each row in [first_row, last_row]:
-        - Read AssetNumber from column 2; skip unless it's a non-empty string.
-        - fetch_asset() to get the full asset JSON.
-        - For every direct-field column (row 1 blank), overwrite the top-level
-          field named in row 6 with the cell value.
-        - For every captioned-attribute column (row 1 = 'Attribute' with a
-          level_N indicator in row 3), find the matching AssetAttributes entry
-          and overwrite AttributeItem<suffix>.
-        - POST the modified JSON via save_asset() (uses asset_save endpoint, adds
-          'Authorization: Bearer <token>')."""
+        For each row in [first_row, last_row] of the named sheet:
+        - If column 2 (AssetNumber) is a non-empty string → fetch that asset.
+        - If column 2 is blank → POST to ep_asset_create with the sheet's template
+          (from svc_config['asset_classes']), write the new AssetNumber and
+          AssetRegisterName back to the row, then fetch the just-created asset.
+        - Apply each non-blank cell value to the asset:
+            * row-1 = 'Attribute' with level_N in row 3 → mutate AssetAttributes.
+            * row-1 blank → overwrite the top-level field named in row 6.
+        - POST the modified JSON via save_asset()."""
         from openpyxl import load_workbook  # lazy import
 
         xlsx_path = Path(file)
@@ -344,22 +343,56 @@ class T1Client:
             for col in range(1, max_col + 1)
         ]
 
-        for row in range(first_row, last_row + 1):
-            asset_number = ws.cell(row=row, column=2).value
-            if not isinstance(asset_number, str) or not asset_number.strip():
-                continue
+        asset_num_col = None
+        asset_reg_col = None
+        for idx, h in enumerate(headers, start=1):
+            if h[4] == "AssetNumber":
+                asset_num_col = idx
+            elif h[4] == "AssetRegisterName":
+                asset_reg_col = idx
 
+        asset_register = self.svc_config.get("asset_register") or self.svc_config.get("asset register")
+        target_class = sheet.replace("_", "\\")
+        template_id = None
+        for t in self.svc_config.get("asset_classes", []):
+            if t.get("class") in (target_class, sheet):
+                template_id = t.get("template")
+                break
+
+        for row in range(first_row, last_row + 1):
             try:
-                print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
-                asset = self.fetch_asset(asset_number)
+                asset_number = ws.cell(row=row, column=2).value
+
+                if isinstance(asset_number, str) and asset_number.strip():
+                    print(f"  -> {sheet_name} row {row}: updating asset {asset_number}")
+                    asset = self.fetch_asset(asset_number)
+                else:
+                    if not template_id:
+                        ws.cell(row=row, column=27, value=f"Missing 'template' for class '{target_class}'.")
+                        continue
+                    print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
+                    payload = {
+                        "AssetRegisterName": asset_register,
+                        "TemplateAssetNumberInternal": template_id,
+                    }
+                    result = self.save_asset(payload, endpoint="ep_asset_create")
+                    new_asset_number = result.get("AssetNumber") if isinstance(result, dict) else None
+                    if not new_asset_number:
+                        ws.cell(row=row, column=27, value="Create returned no AssetNumber.")
+                        continue
+                    if asset_num_col:
+                        ws.cell(row=row, column=asset_num_col, value=new_asset_number)
+                    if asset_reg_col and isinstance(result, dict) and "AssetRegisterName" in result:
+                        ws.cell(row=row, column=asset_reg_col, value=result["AssetRegisterName"])
+                    asset = self.fetch_asset(new_asset_number)
 
                 for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
                     cell_value = ws.cell(row=row, column=col_idx).value
+                    if cell_value is None or cell_value == "":
+                        continue
                     if kind == "Attribute":
-                        # Captioned attribute: needs AttributeCode + level_N + suffix.
                         if code and suffix and level.startswith("level_"):
                             T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
-                        # Top-level scalar Attribute (no level) — skip.
                     elif header:
                         asset[header] = cell_value
 
@@ -368,79 +401,8 @@ class T1Client:
             except Exception as e:
                 ws.cell(row=row, column=27, value=str(e))
 
-        return xlsx_path
-
-    def create_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
-        """Create assets from a spreadsheet using a template.
-
-        For each row in [first_row, last_row] of the named sheet, sends a create
-        request using the template (resolved from svc_config['asset_classes'] by
-        sheet name) and saves the resulting AssetNumber and AssetRegisterName
-        back to the spreadsheet.
-        """
-        from openpyxl import load_workbook  # lazy import
-
-        xlsx_path = Path(file)
-
-        # Support both 'asset register' and 'asset_register'
-        asset_register = self.svc_config.get("asset_register") or self.svc_config.get("asset register")
-
-        wb = load_workbook(xlsx_path)
-
-        sheet_name = self._sanitize_sheet_name(sheet)
-        if sheet_name not in wb.sheetnames:
-            print(f"  -> Sheet {sheet_name} not found in workbook.")
-            return xlsx_path
-
-        target_class = sheet.replace("_", "\\")
-        template_id = None
-        for t in self.svc_config.get("asset_classes", []):
-            if t.get("class") in (target_class, sheet):
-                template_id = t.get("template")
-                break
-
-        if not template_id:
-            print(f"  -> Missing 'template' for class '{target_class}' in asset_templates.")
-            return xlsx_path
-
-        ws = wb[sheet_name]
-        max_col = ws.max_column
-
-        headers = [
-            str(ws.cell(row=6, column=col).value or "")
-            for col in range(1, max_col + 1)
-        ]
-
-        asset_num_col = None
-        asset_reg_col = None
-        for idx, h in enumerate(headers, start=1):
-            if h == "AssetNumber":
-                asset_num_col = idx
-            elif h == "AssetRegisterName":
-                asset_reg_col = idx
-
-        for row in range(first_row, last_row + 1):
-            try:
-                print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
-                
-                payload = {
-                    "AssetRegisterName": asset_register,
-                    "TemplateAssetNumberInternal": template_id
-                }
-
-                result = self.save_asset(payload, endpoint="ep_asset_create")
-
-                if result:
-                    if asset_num_col and "AssetNumber" in result:
-                        ws.cell(row=row, column=asset_num_col, value=result["AssetNumber"])
-                    if asset_reg_col and "AssetRegisterName" in result:
-                        ws.cell(row=row, column=asset_reg_col, value=result["AssetRegisterName"])
-                ws.cell(row=row, column=27, value="")
-            except Exception as e:
-                ws.cell(row=row, column=27, value=str(e))
-
         wb.save(xlsx_path)
-        print(f"Updated spreadsheet at {xlsx_path}")
+        print(f"Synced spreadsheet at {xlsx_path}")
         return xlsx_path
 
     def extract_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:

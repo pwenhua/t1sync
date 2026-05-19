@@ -622,18 +622,17 @@ namespace T1Sync
             }
         }
 
-        public string SaveAssetFromExcel(string file, string sheet, int firstRow, int lastRow)
+        public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow)
         {
-            // For each row in [firstRow, lastRow] of the named sheet:
-            //  - Read AssetNumber from column 2; skip unless it's a non-empty text cell.
-            //  - FetchAsset() to get the full asset JSON.
-            //  - For every direct-field column (row 1 blank), overwrite the top-level
-            //    field named in row 6 with the cell value.
-            //  - For every captioned-attribute column (row 1 = "Attribute" with a
-            //    level_N indicator in row 3), find the matching AssetAttributes entry
-            //    and overwrite AttributeItem<suffix>.
-            //  - POST the modified JSON via SaveAsset() (uses asset_save endpoint, adds
-            //    'Authorization: Bearer <token>').
+            // Sync a sheet to T1: update existing assets, create new ones for blank rows.
+            //  - If column 2 (AssetNumber) is a non-empty text cell → fetch that asset.
+            //  - If blank → POST to ep_asset_create with the sheet's template (from
+            //    svc_config['asset_classes']), write back AssetNumber/AssetRegisterName,
+            //    then fetch the just-created asset.
+            //  - Apply each non-blank cell value:
+            //      * row-1 "Attribute" with level_N → mutate AssetAttributes.
+            //      * row-1 blank → overwrite the top-level field named in row 6.
+            //  - POST the modified JSON via SaveAsset().
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
 
@@ -644,69 +643,125 @@ namespace T1Sync
                 return xlsxPath;
             }
 
+            var ws = wb.Worksheet(sheetName);
+            var lastUsed = ws.LastColumnUsed();
+            var maxCol = lastUsed?.ColumnNumber() ?? 0;
+
+            var headers = new List<(string Kind, string Code, string Level, string Suffix, string Header)>();
+            for (int col = 1; col <= maxCol; col++)
             {
-                var ws = wb.Worksheet(sheetName);
-                var lastUsed = ws.LastColumnUsed();
-                var maxCol = lastUsed?.ColumnNumber() ?? 0;
+                headers.Add((
+                    ws.Cell(1, col).GetString() ?? "",
+                    ws.Cell(2, col).GetString() ?? "",
+                    ws.Cell(3, col).GetString() ?? "",
+                    ws.Cell(4, col).GetString() ?? "",
+                    ws.Cell(6, col).GetString() ?? ""
+                ));
+            }
 
-                var headers = new List<(string Kind, string Code, string Level, string Suffix, string Header)>();
-                for (int col = 1; col <= maxCol; col++)
+            int? assetNumCol = null;
+            int? assetRegCol = null;
+            for (int i = 0; i < headers.Count; i++)
+            {
+                if (headers[i].Header == "AssetNumber") assetNumCol = i + 1;
+                else if (headers[i].Header == "AssetRegisterName") assetRegCol = i + 1;
+            }
+
+            string? assetRegister = null;
+            if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
+                _svcConfig.TryGetProperty("asset register", out arProp))
+            {
+                assetRegister = arProp.GetString();
+            }
+
+            string? templateId = null;
+            var targetClass = sheet.Replace("_", "\\");
+            if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var t in templates.EnumerateArray())
                 {
-                    headers.Add((
-                        ws.Cell(1, col).GetString() ?? "",
-                        ws.Cell(2, col).GetString() ?? "",
-                        ws.Cell(3, col).GetString() ?? "",
-                        ws.Cell(4, col).GetString() ?? "",
-                        ws.Cell(6, col).GetString() ?? ""
-                    ));
-                }
-
-                for (int row = firstRow; row <= lastRow; row++)
-                {
-                    var assetCell = ws.Cell(row, 2);
-                    if (!assetCell.Value.IsText) continue;
-                    var assetNumber = assetCell.GetString();
-                    if (string.IsNullOrWhiteSpace(assetNumber)) continue;
-
-                    try
+                    var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
+                    if (cls == targetClass || cls == sheet)
                     {
-                        Debug.WriteLine($"  -> {ws.Name} row {row}: saving asset {assetNumber}");
-                        var asset = FetchAsset(assetNumber);
-
-                        var node = JsonNode.Parse(asset.GetRawText())!.AsObject();
-
-                        for (int colIdx = 0; colIdx < headers.Count; colIdx++)
-                        {
-                            var (kind, code, level, suffix, header) = headers[colIdx];
-                            var cellValue = ReadCellValue(ws.Cell(row, colIdx + 1));
-                            var valueNode = cellValue == null ? null : JsonSerializer.SerializeToNode(cellValue);
-
-                            if (kind == "Attribute")
-                            {
-                                // Captioned attribute: needs AttributeCode + level_N + suffix.
-                                if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
-                                {
-                                    SetAttributeValue(node, code, level, suffix, cellValue);
-                                }
-                                // Top-level scalar Attribute (no level) — skip.
-                            }
-                            else if (!string.IsNullOrEmpty(header))
-                            {
-                                node[header] = valueNode;
-                            }
-                        }
-
-                        SaveAsset(node.ToJsonString());
-                        ws.Cell(row, "AA").Value = "";
-                    }
-                    catch (Exception ex)
-                    {
-                        ws.Cell(row, "AA").Value = ex.Message;
+                        templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
+                        break;
                     }
                 }
             }
 
-            Debug.WriteLine($"Saved spreadsheet rows from {xlsxPath}");
+            for (int row = firstRow; row <= lastRow; row++)
+            {
+                try
+                {
+                    var assetCell = ws.Cell(row, 2);
+                    var assetNumber = assetCell.Value.IsText ? assetCell.GetString() : "";
+
+                    JsonObject node;
+                    if (!string.IsNullOrWhiteSpace(assetNumber))
+                    {
+                        Debug.WriteLine($"  -> {sheetName} row {row}: updating asset {assetNumber}");
+                        var asset = FetchAsset(assetNumber);
+                        node = JsonNode.Parse(asset.GetRawText())!.AsObject();
+                    }
+                    else
+                    {
+                        if (string.IsNullOrEmpty(templateId))
+                        {
+                            ws.Cell(row, "AA").Value = $"Missing 'template' for class '{targetClass}'.";
+                            continue;
+                        }
+                        Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
+                        var payload = new Dictionary<string, string?>
+                        {
+                            ["AssetRegisterName"] = assetRegister,
+                            ["TemplateAssetNumberInternal"] = templateId,
+                        };
+                        var result = SaveAsset(payload, "ep_asset_create");
+                        var newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
+                        if (string.IsNullOrEmpty(newAssetNumber))
+                        {
+                            ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
+                            continue;
+                        }
+                        if (assetNumCol.HasValue) SetCellValue(ws.Cell(row, assetNumCol.Value), newAssetNumber);
+                        if (assetRegCol.HasValue && result.TryGetProperty("AssetRegisterName", out var arNameProp))
+                        {
+                            SetCellValue(ws.Cell(row, assetRegCol.Value), JsonElementToValue(arNameProp));
+                        }
+                        var asset = FetchAsset(newAssetNumber);
+                        node = JsonNode.Parse(asset.GetRawText())!.AsObject();
+                    }
+
+                    for (int colIdx = 0; colIdx < headers.Count; colIdx++)
+                    {
+                        var (kind, code, level, suffix, header) = headers[colIdx];
+                        var cellValue = ReadCellValue(ws.Cell(row, colIdx + 1));
+                        if (cellValue == null || (cellValue is string s && string.IsNullOrEmpty(s))) continue;
+
+                        if (kind == "Attribute")
+                        {
+                            if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
+                            {
+                                SetAttributeValue(node, code, level, suffix, cellValue);
+                            }
+                        }
+                        else if (!string.IsNullOrEmpty(header))
+                        {
+                            node[header] = JsonSerializer.SerializeToNode(cellValue);
+                        }
+                    }
+
+                    SaveAsset(node.ToJsonString());
+                    ws.Cell(row, "AA").Value = "";
+                }
+                catch (Exception ex)
+                {
+                    ws.Cell(row, "AA").Value = ex.Message;
+                }
+            }
+
+            wb.Save();
+            Debug.WriteLine($"Synced spreadsheet at {xlsxPath}");
             return xlsxPath;
         }
 
@@ -772,98 +827,5 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string CreateAsset(string file, string sheet, int firstRow, int lastRow)
-        {
-            var xlsxPath = file;
-
-            string? assetRegister = null;
-            if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
-                _svcConfig.TryGetProperty("asset register", out arProp))
-            {
-                assetRegister = arProp.GetString();
-            }
-
-            using var wb = new XLWorkbook(xlsxPath);
-
-            var sheetName = SanitizeSheetName(sheet);
-            if (!wb.Worksheets.Contains(sheetName))
-            {
-                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
-                return xlsxPath;
-            }
-
-            string? templateId = null;
-            var targetClass = sheet.Replace("_", "\\");
-            if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var t in templates.EnumerateArray())
-                {
-                    var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
-                    if (cls == targetClass || cls == sheet)
-                    {
-                        templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
-                        break;
-                    }
-                }
-            }
-
-            if (string.IsNullOrEmpty(templateId))
-            {
-                Debug.WriteLine($"  -> Missing 'template' for class '{targetClass}' in asset_templates.");
-                return xlsxPath;
-            }
-
-            var ws = wb.Worksheet(sheetName);
-            var lastUsed = ws.LastColumnUsed();
-            var maxCol = lastUsed?.ColumnNumber() ?? 0;
-
-            var headers = new List<string>();
-            for (int col = 1; col <= maxCol; col++)
-            {
-                headers.Add(ws.Cell(6, col).GetString() ?? "");
-            }
-
-            int? assetNumCol = null;
-            int? assetRegCol = null;
-            for (int i = 0; i < headers.Count; i++)
-            {
-                if (headers[i] == "AssetNumber") assetNumCol = i + 1;
-                else if (headers[i] == "AssetRegisterName") assetRegCol = i + 1;
-            }
-
-            for (int row = firstRow; row <= lastRow; row++)
-            {
-                try
-                {
-                    Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
-
-                    var payload = new Dictionary<string, string?>
-                    {
-                        ["AssetRegisterName"] = assetRegister,
-                        ["TemplateAssetNumberInternal"] = templateId
-                    };
-
-                    var result = SaveAsset(payload, "ep_asset_create");
-
-                    if (assetNumCol.HasValue && result.TryGetProperty("AssetNumber", out var anProp))
-                    {
-                        SetCellValue(ws.Cell(row, assetNumCol.Value), JsonElementToValue(anProp));
-                    }
-                    if (assetRegCol.HasValue && result.TryGetProperty("AssetRegisterName", out var arNameProp))
-                    {
-                        SetCellValue(ws.Cell(row, assetRegCol.Value), JsonElementToValue(arNameProp));
-                    }
-                    ws.Cell(row, "AA").Value = "";
-                }
-                catch (Exception ex)
-                {
-                    ws.Cell(row, "AA").Value = ex.Message;
-                }
-            }
-
-            wb.Save();
-            Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
-            return xlsxPath;
-        }
     }
 }
