@@ -9,17 +9,12 @@ ROOT_FIELDS = ["AssetRegisterName", "AssetNumber", "Description", "ShortDescript
 INVALID_SHEET_CHARS = set(":\\/?*[]")
 
 class T1Client:
-    def __init__(self, service: str | None = None, config_path: Path = CONFIG_PATH):
+    def __init__(self, service: str, config_path: Path = CONFIG_PATH):
+        if not service:
+            raise ValueError("Service name must be provided.")
         self.config_path = config_path
         self._token: str | None = None
         self.config = self._load_config()
-        self.task_config = self.config.get("task", {})
-        
-        if not service:
-            service = self.task_config.get("t1client")
-        if not service:
-            raise ValueError("Service name must be provided or specified in config task.t1client.")
-            
         self.service = service
         self.svc_config = self.config.get("t1ws", {}).get(self.service, self.config.get(self.service, {}))
 
@@ -184,6 +179,19 @@ class T1Client:
         return cleaned[:31] or "Sheet"
 
     @staticmethod
+    def _unique_sheet_name(wb, base_name: str) -> str:
+        """Sanitized sheet name; if it already exists, append '01', '02', ..."""
+        name = T1Client._sanitize_sheet_name(base_name)
+        if name not in wb.sheetnames:
+            return name
+        stem = name[:29]  # leave room for 2-digit suffix
+        for i in range(1, 100):
+            candidate = f"{stem}{i:02d}"
+            if candidate not in wb.sheetnames:
+                return candidate
+        raise ValueError(f"Could not allocate unique sheet name for {base_name!r}")
+
+    @staticmethod
     def _build_meta_columns(node_meta: dict) -> list[tuple[str, str, str, str, str, str]]:
         """Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
         from the flat node_meta dict. `kind` is "Attribute" for Attribute fields, "" for
@@ -201,10 +209,9 @@ class T1Client:
                 columns.append(("", "", "", "", str(value), key))
         return columns
 
-    def save_meta_to_excel(self, meta: dict | None = None) -> Path:
+    def save_meta_to_excel(self, file: str | Path, meta: dict | None = None) -> Path:
         """Build a spreadsheet from the meta lookup.
-        If `meta` is None, loads from <service>.json next to this file.
-        Output path comes from task_config['file']."""
+        If `meta` is None, loads from <service>.json next to this file."""
         from openpyxl import Workbook, load_workbook  # lazy import
         from openpyxl.utils import get_column_letter  # lazy import
 
@@ -213,8 +220,7 @@ class T1Client:
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
 
-        meta_file = self.task_config.get("file", self.svc_config.get("file", ""))
-        xlsx_path = Path(meta_file)
+        xlsx_path = Path(file)
         xlsx_path.parent.mkdir(parents=True, exist_ok=True)
 
         if xlsx_path.exists():
@@ -225,9 +231,7 @@ class T1Client:
                 del wb["Sheet"]
 
         for node_name, node_meta in meta.items():
-            sheet_name = self._sanitize_sheet_name(node_name)
-            if sheet_name in wb.sheetnames:
-                del wb[sheet_name]
+            sheet_name = self._unique_sheet_name(wb, node_name)
             ws = wb.create_sheet(title=sheet_name)
             for col_idx, col_data in enumerate(self._build_meta_columns(node_meta), start=1):
                 ws.cell(row=1, column=col_idx, value=col_data[0])
@@ -303,10 +307,10 @@ class T1Client:
                 entry[value_key] = value
                 return
 
-    def update_asset_from_excel(self, endpoint: str = "task_update_asset") -> Path:
-        """Push spreadsheet edits back to T1.
+    def update_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+        """Push spreadsheet edits back to T1 for one sheet.
 
-        For each row in [first_row, last_row] of every sheet:
+        For each row in [first_row, last_row]:
         - Read AssetNumber from column 2; skip unless it's a non-empty string.
         - fetch_asset() to get the full asset JSON.
         - For every direct-field column (row 1 blank), overwrite the top-level
@@ -318,89 +322,80 @@ class T1Client:
           'Authorization: Bearer <token>')."""
         from openpyxl import load_workbook  # lazy import
 
-        cfg = self.task_config.get(endpoint, self.svc_config.get(endpoint, {}))
-        xlsx_path = Path(cfg.get("file", self.task_config.get("file", "")))
-        first_row = int(cfg.get("first_row", self.task_config.get("first_row", 0)))
-        last_row = int(cfg.get("last_row", self.task_config.get("last_row", 0)))
-
+        xlsx_path = Path(file)
         wb = load_workbook(xlsx_path)
 
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            max_col = ws.max_column
-
-            headers = [
-                (
-                    str(ws.cell(row=1, column=col).value or ""),  # kind
-                    str(ws.cell(row=2, column=col).value or ""),  # AttributeCode
-                    str(ws.cell(row=3, column=col).value or ""),  # level
-                    str(ws.cell(row=4, column=col).value or ""),  # suffix
-                    str(ws.cell(row=6, column=col).value or ""),  # header
-                )
-                for col in range(1, max_col + 1)
-            ]
-
-            for row in range(first_row, last_row + 1):
-                asset_number = ws.cell(row=row, column=2).value
-                if not isinstance(asset_number, str) or not asset_number.strip():
-                    continue
-
-                try:
-                    print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
-                    asset = self.fetch_asset(asset_number)
-
-                    for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
-                        cell_value = ws.cell(row=row, column=col_idx).value
-                        if kind == "Attribute":
-                            # Captioned attribute: needs AttributeCode + level_N + suffix.
-                            if code and suffix and level.startswith("level_"):
-                                T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
-                            # Top-level scalar Attribute (no level) — skip.
-                        elif header:
-                            asset[header] = cell_value
-
-                    self.save_asset(asset)
-                    ws.cell(row=row, column=27, value="")
-                except Exception as e:
-                    ws.cell(row=row, column=27, value=str(e))
-
-        return xlsx_path
-
-    def create_asset(self, endpoint: str = "task_create_asset") -> Path:
-        """Create assets from a spreadsheet using a template.
-
-        For each row in [first_row, last_row] of specified sheets,
-        sends a create request using the template and saves the resulting
-        AssetNumber and AssetRegisterName back to the spreadsheet.
-        """
-        from openpyxl import load_workbook  # lazy import
-
-        cfg = self.task_config.get(endpoint, self.svc_config.get(endpoint, {}))
-        xlsx_path = Path(cfg.get("file", self.task_config.get("file", "")))
-        first_row = int(cfg.get("first_row", self.task_config.get("first_row", 0)))
-        last_row = int(cfg.get("last_row", self.task_config.get("last_row", 0)))
-        
-        # Support both 'asset register' and 'asset_register'
-        asset_register = self.task_config.get("asset_register") or self.task_config.get("asset register") or \
-                         self.svc_config.get("asset_register") or self.svc_config.get("asset register")
-
-        wb = load_workbook(xlsx_path)
-
-        sheet_key = cfg.get("sheet", self.task_config.get("sheet"))
-
-        if not sheet_key:
-            print("  -> Missing 'sheet' in task_create_asset config.")
-            return xlsx_path
-
-        sheet_name = self._sanitize_sheet_name(sheet_key)
+        sheet_name = self._sanitize_sheet_name(sheet)
         if sheet_name not in wb.sheetnames:
             print(f"  -> Sheet {sheet_name} not found in workbook.")
             return xlsx_path
 
-        target_class = sheet_key.replace("_", "\\")
+        ws = wb[sheet_name]
+        max_col = ws.max_column
+
+        headers = [
+            (
+                str(ws.cell(row=1, column=col).value or ""),  # kind
+                str(ws.cell(row=2, column=col).value or ""),  # AttributeCode
+                str(ws.cell(row=3, column=col).value or ""),  # level
+                str(ws.cell(row=4, column=col).value or ""),  # suffix
+                str(ws.cell(row=6, column=col).value or ""),  # header
+            )
+            for col in range(1, max_col + 1)
+        ]
+
+        for row in range(first_row, last_row + 1):
+            asset_number = ws.cell(row=row, column=2).value
+            if not isinstance(asset_number, str) or not asset_number.strip():
+                continue
+
+            try:
+                print(f"  -> {sheet_name} row {row}: saving asset {asset_number}")
+                asset = self.fetch_asset(asset_number)
+
+                for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
+                    cell_value = ws.cell(row=row, column=col_idx).value
+                    if kind == "Attribute":
+                        # Captioned attribute: needs AttributeCode + level_N + suffix.
+                        if code and suffix and level.startswith("level_"):
+                            T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
+                        # Top-level scalar Attribute (no level) — skip.
+                    elif header:
+                        asset[header] = cell_value
+
+                self.save_asset(asset)
+                ws.cell(row=row, column=27, value="")
+            except Exception as e:
+                ws.cell(row=row, column=27, value=str(e))
+
+        return xlsx_path
+
+    def create_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+        """Create assets from a spreadsheet using a template.
+
+        For each row in [first_row, last_row] of the named sheet, sends a create
+        request using the template (resolved from svc_config['asset_classes'] by
+        sheet name) and saves the resulting AssetNumber and AssetRegisterName
+        back to the spreadsheet.
+        """
+        from openpyxl import load_workbook  # lazy import
+
+        xlsx_path = Path(file)
+
+        # Support both 'asset register' and 'asset_register'
+        asset_register = self.svc_config.get("asset_register") or self.svc_config.get("asset register")
+
+        wb = load_workbook(xlsx_path)
+
+        sheet_name = self._sanitize_sheet_name(sheet)
+        if sheet_name not in wb.sheetnames:
+            print(f"  -> Sheet {sheet_name} not found in workbook.")
+            return xlsx_path
+
+        target_class = sheet.replace("_", "\\")
         template_id = None
         for t in self.svc_config.get("asset_classes", []):
-            if t.get("class") in (target_class, sheet_key):
+            if t.get("class") in (target_class, sheet):
                 template_id = t.get("template")
                 break
 
@@ -448,51 +443,51 @@ class T1Client:
         print(f"Updated spreadsheet at {xlsx_path}")
         return xlsx_path
 
-    def extract_asset(self, endpoint: str = "task_extract_asset") -> Path:
-        """Populate spreadsheet rows with live asset values.
+    def extract_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+        """Populate spreadsheet rows of one sheet with live asset values.
 
-        For each row in [first_row, last_row] of every sheet in the workbook,
-        read the AssetNumber from column 2, fetch the asset, and write a value
-        into every column based on its 6-row header tuple (row 1 = kind)."""
+        For each row in [first_row, last_row] of the named sheet, read the
+        AssetNumber from column 2, fetch the asset, and write a value into every
+        column based on its 6-row header tuple (row 1 = kind)."""
         from openpyxl import load_workbook  # lazy import
 
-        cfg = self.task_config.get(endpoint, self.svc_config.get(endpoint, {}))
-        xlsx_path = Path(cfg.get("file", self.task_config.get("file", "")))
-        first_row = int(cfg.get("first_row", self.task_config.get("first_row", 0)))
-        last_row = int(cfg.get("last_row", self.task_config.get("last_row", 0)))
-
+        xlsx_path = Path(file)
         wb = load_workbook(xlsx_path)
 
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            max_col = ws.max_column
+        sheet_name = self._sanitize_sheet_name(sheet)
+        if sheet_name not in wb.sheetnames:
+            print(f"  -> Sheet {sheet_name} not found in workbook.")
+            return xlsx_path
 
-            headers = [
-                (
-                    str(ws.cell(row=2, column=col).value or ""),
-                    str(ws.cell(row=3, column=col).value or ""),
-                    str(ws.cell(row=4, column=col).value or ""),
-                    str(ws.cell(row=5, column=col).value or ""),
-                    str(ws.cell(row=6, column=col).value or ""),
-                )
-                for col in range(1, max_col + 1)
-            ]
+        ws = wb[sheet_name]
+        max_col = ws.max_column
 
-            for row in range(first_row, last_row + 1):
-                asset_number = ws.cell(row=row, column=2).value
-                if asset_number in (None, ""):
-                    continue
-                try:
-                    print(f"  -> {sheet_name} row {row}: fetching asset {asset_number}")
-                    asset = self.fetch_asset(str(asset_number))
+        headers = [
+            (
+                str(ws.cell(row=2, column=col).value or ""),
+                str(ws.cell(row=3, column=col).value or ""),
+                str(ws.cell(row=4, column=col).value or ""),
+                str(ws.cell(row=5, column=col).value or ""),
+                str(ws.cell(row=6, column=col).value or ""),
+            )
+            for col in range(1, max_col + 1)
+        ]
 
-                    for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
-                        value = T1Client._extract_value(asset, attr_code, level, suffix, header)
-                        if value is not None:
-                            ws.cell(row=row, column=col_idx, value=value)
-                    ws.cell(row=row, column=27, value="")
-                except Exception as e:
-                    ws.cell(row=row, column=27, value=str(e))
+        for row in range(first_row, last_row + 1):
+            asset_number = ws.cell(row=row, column=2).value
+            if asset_number in (None, ""):
+                continue
+            try:
+                print(f"  -> {sheet_name} row {row}: fetching asset {asset_number}")
+                asset = self.fetch_asset(str(asset_number))
+
+                for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
+                    value = T1Client._extract_value(asset, attr_code, level, suffix, header)
+                    if value is not None:
+                        ws.cell(row=row, column=col_idx, value=value)
+                ws.cell(row=row, column=27, value="")
+            except Exception as e:
+                ws.cell(row=row, column=27, value=str(e))
 
         wb.save(xlsx_path)
         print(f"Updated spreadsheet at {xlsx_path}")

@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+*.ipynb
 
 # Virtual environments
 .venv/

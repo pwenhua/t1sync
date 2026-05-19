@@ -3,6 +3,11 @@ from T1Client import T1Client
 if __name__ == "__main__":
     client = T1Client("workshop-TP")
 
+    xlsx_file = "c:/temp/workshop-TP_AR.xlsx"
+    sheet = "Tree\\Street Tree"
+    first_row = 7
+    last_row = 7
+
     # test_id = "0100017"
     # response = client.fetch_asset(test_id)
     # print(f"Top-level keys in response: {list(response.keys())}")
@@ -15,10 +20,10 @@ if __name__ == "__main__":
 
     lookup = client.parse_assets_meta()
 
-    # path = client.save_meta_to_excel()
+    # path = client.save_meta_to_excel(xlsx_file)
 
-    # path = client.extract_asset()
+    # path = client.extract_asset(xlsx_file, sheet, first_row, last_row)
 
-    # path = client.update_asset_from_excel()
+    # path = client.update_asset_from_excel(xlsx_file, sheet, first_row, last_row)
 
-    # path = client.create_asset()
+    # path = client.create_asset(xlsx_file, sheet, first_row, last_row)

@@ -13,6 +13,11 @@ namespace T1Sync
         {
             var client = new T1Client("workshop-TP");
 
+            var xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
+            var sheet = @"Tree\Street Tree";
+            var firstRow = 7;
+            var lastRow = 7;
+
             // var testId = "0100017";
             // var response = client.FetchAsset(testId);
             // Debug.WriteLine($"Top-level keys: {string.Join(", ", response.EnumerateObject().Select(p => p.Name))}");
@@ -21,15 +26,16 @@ namespace T1Sync
             // var response = client.SaveAsset(asset);
             // Debug.WriteLine($"Save response received.");
 
-            var lookup = client.ParseAssetsMeta(); 
+            var lookup = client.ParseAssetsMeta();
+            Debug.WriteLine($"Parsed metadata for {lookup.Count} asset types.");
 
-            // var path = client.SaveMetaToExcel();
+            // var path = client.SaveMetaToExcel(xlsxFile);
 
-            // var path = client.ExtractAsset();
+            // var path = client.ExtractAsset(xlsxFile, sheet, firstRow, lastRow);
 
-            // var path = client.SaveAssetFromExcel();
+            // var path = client.SaveAssetFromExcel(xlsxFile, sheet, firstRow, lastRow);
 
-            // var path = client.CreateAsset();
+            // var path = client.CreateAsset(xlsxFile, sheet, firstRow, lastRow);
         }
     }
 }

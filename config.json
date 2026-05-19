@@ -1,8 +1,7 @@
-
 {
     "t1ws": {
         "workshop-TP":{
-            "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",           
+            "base_url": "https://maroondah-workshop.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-WORKSHOP/",
             "asset register":"TP_AR",
             "ep_get_token": {
                 "method": "POST",
@@ -27,26 +26,14 @@
                 "url": "Api/WS/v2/Asset/CreateFromTemplate"
             },
 
-            "asset_classes": 
+            "asset_classes":
             [
-                { 
-                    "class":"Tree\\Street Tree",                  
+                {
+                    "class":"Tree\\Street Tree",
                     "seed": "0100017",
                     "template": "0100008"
-                }             
-
+                }
             ]
-             
         }
-    },
-
-    "task": {        
-        "t1client":"workshop",
-        "file":"c:/temp/workshop-TP_AR.xlsx",
-        "sheet":"Tree_Street Tree",
-        "first_row": 7,
-        "last_row": 7  
     }
-
 }
- 

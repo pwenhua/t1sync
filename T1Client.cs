@@ -45,27 +45,19 @@ namespace T1Sync
         public string ConfigPath { get; }
         public string MetaPath => $@"..\..\..\{Service}.json";
         public JsonElement SvcConfig => _svcConfig;
-        public JsonElement TaskConfig => _taskConfig;
 
         private readonly JsonElement _config;
         private readonly JsonElement _svcConfig;
-        private readonly JsonElement _taskConfig;
         private string? _token;
 
-        public T1Client(string? service = null, string configPath = DefaultConfigPath)
+        public T1Client(string service, string configPath = DefaultConfigPath)
         {
+            if (string.IsNullOrEmpty(service))
+                throw new ArgumentException("Service name must be provided.", nameof(service));
+
             ConfigPath = configPath;
             _config = LoadConfig(configPath);
-            if (_config.TryGetProperty("task", out var task)) _taskConfig = task;
-
-            if (string.IsNullOrEmpty(service))
-            {
-                if (_taskConfig.ValueKind != JsonValueKind.Undefined && _taskConfig.TryGetProperty("t1client", out var t1ClientProp))
-                    service = t1ClientProp.GetString();
-            }
-
-            Service = service ?? throw new ArgumentException("Service name must be provided or specified in config task.t1client.");
-            
+            Service = service;
             _svcConfig = _config.TryGetProperty("t1ws", out var t1ws) && t1ws.TryGetProperty(Service, out var svc) ? svc : _config.GetProperty(Service);
         }
 
@@ -375,6 +367,20 @@ namespace T1Sync
             return string.IsNullOrEmpty(result) ? "Sheet" : result;
         }
 
+        private static string UniqueSheetName(XLWorkbook wb, string baseName)
+        {
+            // Sanitized sheet name; if it already exists, append '01', '02', ...
+            var name = SanitizeSheetName(baseName);
+            if (!wb.Worksheets.Contains(name)) return name;
+            var stem = name.Length > 29 ? name.Substring(0, 29) : name;
+            for (int i = 1; i < 100; i++)
+            {
+                var candidate = stem + i.ToString("D2");
+                if (!wb.Worksheets.Contains(candidate)) return candidate;
+            }
+            throw new InvalidOperationException($"Could not allocate unique sheet name for '{baseName}'");
+        }
+
         private static List<(string, string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
         {
             // Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
@@ -430,7 +436,7 @@ namespace T1Sync
             return columns;
         }
 
-        public string SaveMetaToExcel(Dictionary<string, object>? meta = null)
+        public string SaveMetaToExcel(string file, Dictionary<string, object>? meta = null)
         {
 #if USE_CLOSEDXML
             if (meta == null)
@@ -443,10 +449,7 @@ namespace T1Sync
                 meta = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonText);
             }
 
-            var fileProp = _taskConfig.ValueKind != JsonValueKind.Undefined && _taskConfig.TryGetProperty("file", out var tfp) 
-                ? tfp 
-                : _svcConfig.GetProperty("file");
-            var xlsxPath = fileProp.GetString()!;
+            var xlsxPath = file;
             var dir = Path.GetDirectoryName(xlsxPath);
             if (!string.IsNullOrEmpty(dir))
             {
@@ -463,12 +466,7 @@ namespace T1Sync
             foreach (var kvp in meta!)
             {
                 var nodeName = kvp.Key;
-                var sheetName = SanitizeSheetName(nodeName);
-
-                if (wb.Worksheets.Contains(sheetName))
-                {
-                    wb.Worksheets.Delete(sheetName);
-                }
+                var sheetName = UniqueSheetName(wb, nodeName);
 
                 var ws = wb.Worksheets.Add(sheetName);
                 var columns = BuildMetaColumns(kvp.Value);
@@ -624,9 +622,9 @@ namespace T1Sync
             }
         }
 
-        public string SaveAssetFromExcel(string endpoint = "save_asset")
+        public string SaveAssetFromExcel(string file, string sheet, int firstRow, int lastRow)
         {
-            // For each row in [first_row, last_row] of every sheet:
+            // For each row in [firstRow, lastRow] of the named sheet:
             //  - Read AssetNumber from column 2; skip unless it's a non-empty text cell.
             //  - FetchAsset() to get the full asset JSON.
             //  - For every direct-field column (row 1 blank), overwrite the top-level
@@ -636,14 +634,18 @@ namespace T1Sync
             //    and overwrite AttributeItem<suffix>.
             //  - POST the modified JSON via SaveAsset() (uses asset_save endpoint, adds
             //    'Authorization: Bearer <token>').
-            var cfg = _svcConfig.GetProperty(endpoint);
-            var xlsxPath = cfg.GetProperty("file").GetString()!;
-            var firstRow = cfg.GetProperty("first_row").GetInt32();
-            var lastRow = cfg.GetProperty("last_row").GetInt32();
-
+            var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
-            foreach (var ws in wb.Worksheets)
+
+            var sheetName = SanitizeSheetName(sheet);
+            if (!wb.Worksheets.Contains(sheetName))
             {
+                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
+                return xlsxPath;
+            }
+
+            {
+                var ws = wb.Worksheet(sheetName);
                 var lastUsed = ws.LastColumnUsed();
                 var maxCol = lastUsed?.ColumnNumber() ?? 0;
 
@@ -708,16 +710,20 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string ExtractAsset(string endpoint = "extract_asset")
+        public string ExtractAsset(string file, string sheet, int firstRow, int lastRow)
         {
-            var cfg = _svcConfig.GetProperty(endpoint);
-            var xlsxPath = cfg.GetProperty("file").GetString()!;
-            var firstRow = cfg.GetProperty("first_row").GetInt32();
-            var lastRow = cfg.GetProperty("last_row").GetInt32();
-
+            var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
-            foreach (var ws in wb.Worksheets)
+
+            var sheetName = SanitizeSheetName(sheet);
+            if (!wb.Worksheets.Contains(sheetName))
             {
+                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
+                return xlsxPath;
+            }
+
+            {
+                var ws = wb.Worksheet(sheetName);
                 var lastUsed = ws.LastColumnUsed();
                 var maxCol = lastUsed?.ColumnNumber() ?? 0;
 
@@ -766,36 +772,20 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public string CreateAsset(string endpoint = "create_asset")
+        public string CreateAsset(string file, string sheet, int firstRow, int lastRow)
         {
-            var cfg = _svcConfig.GetProperty(endpoint);
-            var xlsxPath = cfg.GetProperty("file").GetString()!;
-            var firstRow = cfg.GetProperty("first_row").GetInt32();
-            var lastRow = cfg.GetProperty("last_row").GetInt32();
+            var xlsxPath = file;
 
             string? assetRegister = null;
-            if (_taskConfig.ValueKind != JsonValueKind.Undefined && 
-               (_taskConfig.TryGetProperty("asset_register", out var tarProp) || _taskConfig.TryGetProperty("asset register", out tarProp)))
-            {
-                assetRegister = tarProp.GetString();
-            }
-            else if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
-                     _svcConfig.TryGetProperty("asset register", out arProp))
+            if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
+                _svcConfig.TryGetProperty("asset register", out arProp))
             {
                 assetRegister = arProp.GetString();
             }
 
             using var wb = new XLWorkbook(xlsxPath);
 
-            var sheetKey = cfg.TryGetProperty("sheet", out var shProp) ? shProp.GetString() : (_taskConfig.ValueKind != JsonValueKind.Undefined && _taskConfig.TryGetProperty("sheet", out var tshProp) ? tshProp.GetString() : null);
-
-            if (string.IsNullOrEmpty(sheetKey))
-            {
-                Debug.WriteLine("  -> Missing 'sheet' in create_asset config.");
-                return xlsxPath;
-            }
-
-            var sheetName = SanitizeSheetName(sheetKey);
+            var sheetName = SanitizeSheetName(sheet);
             if (!wb.Worksheets.Contains(sheetName))
             {
                 Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
@@ -803,13 +793,13 @@ namespace T1Sync
             }
 
             string? templateId = null;
-            var targetClass = sheetKey.Replace("_", "\\");
+            var targetClass = sheet.Replace("_", "\\");
             if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
             {
                 foreach (var t in templates.EnumerateArray())
                 {
                     var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
-                    if (cls == targetClass || cls == sheetKey)
+                    if (cls == targetClass || cls == sheet)
                     {
                         templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
                         break;
