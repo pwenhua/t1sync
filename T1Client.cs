@@ -627,8 +627,9 @@ namespace T1Sync
             // Sync a sheet to T1: update existing assets, create new ones for blank rows.
             //  - If column 2 (AssetNumber) is a non-empty text cell → fetch that asset.
             //  - If blank → POST to ep_asset_create with the sheet's template (from
-            //    svc_config['asset_classes']), write back AssetNumber/AssetRegisterName,
-            //    then fetch the just-created asset.
+            //    svc_config['asset_classes']), then fetch the *seed* asset (also from
+            //    asset_classes) and use it as the JSON shape, patching in the new
+            //    AssetNumber/AssetRegisterName so SaveAsset targets the new asset.
             //  - Apply each non-blank cell value:
             //      * row-1 "Attribute" with level_N → mutate AssetAttributes.
             //      * row-1 blank → overwrite the top-level field named in row 6.
@@ -675,6 +676,7 @@ namespace T1Sync
             }
 
             string? templateId = null;
+            string? seedId = null;
             var targetClass = sheet.Replace("_", "\\");
             if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
             {
@@ -684,6 +686,7 @@ namespace T1Sync
                     if (cls == targetClass || cls == sheet)
                     {
                         templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
+                        seedId = t.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
                         break;
                     }
                 }
@@ -710,6 +713,12 @@ namespace T1Sync
                             ws.Cell(row, "AA").Value = $"Missing 'template' for class '{targetClass}'.";
                             continue;
                         }
+                        if (string.IsNullOrEmpty(seedId))
+                        {
+                            ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{targetClass}'.";
+                            continue;
+                        }
+
                         Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
                         var payload = new Dictionary<string, string?>
                         {
@@ -723,13 +732,18 @@ namespace T1Sync
                             ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
                             continue;
                         }
+                        var newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
                         if (assetNumCol.HasValue) SetCellValue(ws.Cell(row, assetNumCol.Value), newAssetNumber);
-                        if (assetRegCol.HasValue && result.TryGetProperty("AssetRegisterName", out var arNameProp))
+                        if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
                         {
-                            SetCellValue(ws.Cell(row, assetRegCol.Value), JsonElementToValue(arNameProp));
+                            SetCellValue(ws.Cell(row, assetRegCol.Value), newAssetRegister);
                         }
-                        var asset = FetchAsset(newAssetNumber);
-                        node = JsonNode.Parse(asset.GetRawText())!.AsObject();
+
+                        // Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
+                        var seedAsset = FetchAsset(seedId);
+                        node = JsonNode.Parse(seedAsset.GetRawText())!.AsObject();
+                        node["AssetNumber"] = newAssetNumber;
+                        if (!string.IsNullOrEmpty(newAssetRegister)) node["AssetRegisterName"] = newAssetRegister;
                     }
 
                     for (int colIdx = 0; colIdx < headers.Count; colIdx++)

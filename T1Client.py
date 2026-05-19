@@ -313,8 +313,9 @@ class T1Client:
         For each row in [first_row, last_row] of the named sheet:
         - If column 2 (AssetNumber) is a non-empty string → fetch that asset.
         - If column 2 is blank → POST to ep_asset_create with the sheet's template
-          (from svc_config['asset_classes']), write the new AssetNumber and
-          AssetRegisterName back to the row, then fetch the just-created asset.
+          (from svc_config['asset_classes']), then fetch the **seed** asset (also
+          from asset_classes) and use it as the JSON shape, patching in the new
+          AssetNumber/AssetRegisterName so save_asset() targets the new asset.
         - Apply each non-blank cell value to the asset:
             * row-1 = 'Attribute' with level_N in row 3 → mutate AssetAttributes.
             * row-1 blank → overwrite the top-level field named in row 6.
@@ -354,9 +355,11 @@ class T1Client:
         asset_register = self.svc_config.get("asset_register") or self.svc_config.get("asset register")
         target_class = sheet.replace("_", "\\")
         template_id = None
+        seed_id = None
         for t in self.svc_config.get("asset_classes", []):
             if t.get("class") in (target_class, sheet):
                 template_id = t.get("template")
+                seed_id = t.get("seed")
                 break
 
         for row in range(first_row, last_row + 1):
@@ -370,6 +373,10 @@ class T1Client:
                     if not template_id:
                         ws.cell(row=row, column=27, value=f"Missing 'template' for class '{target_class}'.")
                         continue
+                    if not seed_id:
+                        ws.cell(row=row, column=27, value=f"Missing 'seed' for class '{target_class}'.")
+                        continue
+
                     print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
                     payload = {
                         "AssetRegisterName": asset_register,
@@ -380,11 +387,17 @@ class T1Client:
                     if not new_asset_number:
                         ws.cell(row=row, column=27, value="Create returned no AssetNumber.")
                         continue
+                    new_asset_register = (result.get("AssetRegisterName") if isinstance(result, dict) else None) or asset_register
                     if asset_num_col:
                         ws.cell(row=row, column=asset_num_col, value=new_asset_number)
-                    if asset_reg_col and isinstance(result, dict) and "AssetRegisterName" in result:
-                        ws.cell(row=row, column=asset_reg_col, value=result["AssetRegisterName"])
-                    asset = self.fetch_asset(new_asset_number)
+                    if asset_reg_col and new_asset_register:
+                        ws.cell(row=row, column=asset_reg_col, value=new_asset_register)
+
+                    # Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
+                    asset = self.fetch_asset(seed_id)
+                    asset["AssetNumber"] = new_asset_number
+                    if new_asset_register:
+                        asset["AssetRegisterName"] = new_asset_register
 
                 for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
                     cell_value = ws.cell(row=row, column=col_idx).value

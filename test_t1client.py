@@ -18,10 +18,10 @@ if __name__ == "__main__":
     # response = client.save_asset(asset)
     # print(f"Save response: {response}")
 
-    lookup = client.parse_assets_meta()
+    # lookup = client.parse_assets_meta()
 
     # path = client.save_meta_to_excel(xlsx_file)
 
     # path = client.extract_asset(xlsx_file, sheet, first_row, last_row)
 
-    # path = client.sync_asset_from_excel(xlsx_file, sheet, first_row, last_row)
+    path = client.sync_asset_from_excel(xlsx_file, sheet, first_row, last_row)
