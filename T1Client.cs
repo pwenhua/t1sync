@@ -622,7 +622,7 @@ namespace T1Sync
             }
         }
 
-        public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow)
+        public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryrun = false)
         {
             // Sync a sheet to T1: update existing assets, create new ones for blank rows.
             //  - If column 2 (AssetNumber) is a non-empty text cell → fetch that asset.
@@ -731,18 +731,29 @@ namespace T1Sync
                             ["AssetRegisterName"] = assetRegister,
                             ["TemplateAssetNumberInternal"] = templateId,
                         };
-                        var result = SaveAsset(payload, "ep_asset_create");
-                        var newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
-                        if (string.IsNullOrEmpty(newAssetNumber))
+
+                        string? newAssetNumber = null;
+                        string? newAssetRegister = assetRegister;
+
+                        if (!dryrun)
                         {
-                            ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
-                            continue;
+                            var result = SaveAsset(payload, "ep_asset_create");
+                            newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
+                            if (string.IsNullOrEmpty(newAssetNumber))
+                            {
+                                ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
+                                continue;
+                            }
+                            newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
+                            if (assetNumCol.HasValue) SetCellValue(ws.Cell(row, assetNumCol.Value), newAssetNumber);
+                            if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
+                            {
+                                SetCellValue(ws.Cell(row, assetRegCol.Value), newAssetRegister);
+                            }
                         }
-                        var newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
-                        if (assetNumCol.HasValue) SetCellValue(ws.Cell(row, assetNumCol.Value), newAssetNumber);
-                        if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
+                        else
                         {
-                            SetCellValue(ws.Cell(row, assetRegCol.Value), newAssetRegister);
+                            newAssetNumber = $"DRYRUN_NEW_ROW_{row}";
                         }
 
                         // Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
@@ -798,8 +809,17 @@ namespace T1Sync
                         node["AssetRegisterName"] = assetRegister;
                     }
 
-                    SaveAsset(node.ToJsonString());
-                    ws.Cell(row, "AA").Value = "";
+                    if (dryrun)
+                    {
+                        var dumpPath = Path.Combine(Path.GetDirectoryName(xlsxPath) ?? "", "payload.txt");
+                        File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                        ws.Cell(row, "AA").Value = $"Dry run: Payload saved to {Path.GetFileName(dumpPath)}";
+                    }
+                    else
+                    {
+                        SaveAsset(node.ToJsonString());
+                        ws.Cell(row, "AA").Value = "";
+                    }
                 }
                 catch (Exception ex)
                 {

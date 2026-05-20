@@ -307,7 +307,7 @@ class T1Client:
                 entry[value_key] = value
                 return
 
-    def sync_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+    def sync_asset_from_excel(self, file: str | Path, sheet: str, first_row: int, last_row: int, dryrun: bool = False) -> Path:
         """Sync a sheet to T1: update existing assets, create new ones for blank rows.
 
         For each row in [first_row, last_row] of the named sheet:
@@ -480,6 +480,19 @@ class T1Client:
                     if header.lower() == "assetnumber":
                         continue
                     value = T1Client._extract_value(asset, attr_code, level, suffix, header)
+                    if value is not None:
+                        ws.cell(row=row, column=col_idx, value=value)
+                ws.cell(row=row, column=27, value="")
+            except Exception as e:
+                ws.cell(row=row, column=27, value=str(e))
+
+        try:
+            wb.save(xlsx_path)
+            print(f"Updated spreadsheet at {xlsx_path}")
+        except PermissionError:
+            print(f"Error: Could not save to {xlsx_path} because it is open in another program (like Excel). Please close it and try again.")
+        return xlsx_path
+t, attr_code, level, suffix, header)
                     if value is not None:
                         ws.cell(row=row, column=col_idx, value=value)
                 ws.cell(row=row, column=27, value="")

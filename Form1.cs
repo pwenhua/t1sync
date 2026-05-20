@@ -13,10 +13,11 @@ namespace T1Sync
         {
             var client = new T1Client("workshop-TP");
 
-            var xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
-            var sheet = "Tree/Street Tree";
-            var firstRow = 7;
-            var lastRow = 7;
+            //var xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
+            var xlsxFile = @"https://maroondahcc.sharepoint.com/sites/AssetsWorkspace/Shared%20Documents/Asset%20Management/AssetRegister/AssetRegisterTest.xlsx?web=1";
+            var sheet = "Tree_Street Tree";
+            var firstRow = 8;
+            var lastRow = 8;
 
             //var testId = "0100017";
             //var response = client.FetchAsset(testId);
@@ -32,7 +33,7 @@ namespace T1Sync
             //var path = client.SaveMetaToExcel(xlsxFile);
             //var path = client.ExtractAsset(xlsxFile, sheet, firstRow, lastRow);
 
-            var path = client.SyncAssetFromExcel(xlsxFile, sheet, firstRow, lastRow);
+            var path = client.SyncAssetFromExcel(xlsxFile, sheet, firstRow, lastRow, dryrun: true);
         }
     }
 }
