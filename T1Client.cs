@@ -21,6 +21,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Application = Microsoft.Office.Interop.Excel.Application;
 #if USE_CLOSEDXML
 using ClosedXML.Excel;
 #endif
@@ -622,6 +623,62 @@ namespace T1Sync
             }
         }
 
+        private class OnlineExcelHelper : IDisposable
+        {
+            private Application? _app;
+            private string _originalFile;
+            public string LocalFilePath { get; }
+            public bool IsOnline { get; }
+
+            public OnlineExcelHelper(string file)
+            {
+                _originalFile = file;
+                IsOnline = file.StartsWith("http", StringComparison.OrdinalIgnoreCase);
+                if (IsOnline)
+                {
+                    _app = new Application();
+                    _app.DisplayAlerts = false;
+                    var wb = _app.Workbooks.Open(file);
+                    LocalFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".xlsx");
+                    wb.SaveAs(LocalFilePath);
+                    wb.Close();
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
+                else
+                {
+                    LocalFilePath = file;
+                }
+            }
+
+            public void SaveBackToOnline()
+            {
+                if (IsOnline && _app != null)
+                {
+                    var wb = _app.Workbooks.Open(LocalFilePath);
+                    wb.SaveAs(_originalFile);
+                    wb.Close();
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
+            }
+
+            public void Dispose()
+            {
+                if (IsOnline)
+                {
+                    if (_app != null)
+                    {
+                        _app.Quit();
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(_app);
+                        _app = null;
+                    }
+                    if (File.Exists(LocalFilePath))
+                    {
+                        try { File.Delete(LocalFilePath); } catch { }
+                    }
+                }
+            }
+        }
+
         public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryrun = false)
         {
             // Sync a sheet to T1: update existing assets, create new ones for blank rows.
@@ -634,7 +691,8 @@ namespace T1Sync
             //      * row-1 "Attribute" with level_N → mutate AssetAttributes.
             //      * row-1 blank → overwrite the top-level field named in row 6.
             //  - POST the modified JSON via SaveAsset().
-            var xlsxPath = file;
+            using var onlineHelper = new OnlineExcelHelper(file);
+            var xlsxPath = onlineHelper.LocalFilePath;
             using var wb = new XLWorkbook(xlsxPath);
 
             var sheetName = SanitizeSheetName(sheet);
@@ -684,15 +742,14 @@ namespace T1Sync
 
             string? templateId = null;
             string? seedId = null;
-            if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
+            if (_svcConfig.TryGetProperty("asset_classes", out var assetClasses) && assetClasses.ValueKind == JsonValueKind.Object)
             {
-                foreach (var t in templates.EnumerateArray())
+                foreach (var prop in assetClasses.EnumerateObject())
                 {
-                    var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
-                    if (cls == sheet)
+                    if (string.Equals(prop.Name, trueAssetType, StringComparison.OrdinalIgnoreCase))
                     {
-                        templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
-                        seedId = t.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
+                        templateId = prop.Value.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
+                        seedId = prop.Value.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
                         break;
                     }
                 }
@@ -716,28 +773,33 @@ namespace T1Sync
                     {
                         if (string.IsNullOrEmpty(templateId))
                         {
-                            ws.Cell(row, "AA").Value = $"Missing 'template' for class '{sheet}'.";
+                            ws.Cell(row, "AA").Value = $"Missing 'template' for class '{trueAssetType}'.";
                             continue;
                         }
                         if (string.IsNullOrEmpty(seedId))
                         {
-                            ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{sheet}'.";
+                            ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{trueAssetType}'.";
                             continue;
                         }
 
                         Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
-                        var payload = new Dictionary<string, string?>
-                        {
-                            ["AssetRegisterName"] = assetRegister,
-                            ["TemplateAssetNumberInternal"] = templateId,
-                        };
+
+                        // Fetch the seed asset to use as the template payload
+                        var seedAsset = FetchAsset(seedId);
+                        var seedNode = JsonNode.Parse(seedAsset.GetRawText())!.AsObject();
+
+                        // Patch the necessary fields for creation
+                        seedNode["AssetRegisterName"] = assetRegister;
+                        seedNode["TemplateAssetNumberInternal"] = templateId;
+                        // Clear the seed's AssetNumber so it gets a new one on creation
+                        seedNode["AssetNumber"] = null;
 
                         string? newAssetNumber = null;
                         string? newAssetRegister = assetRegister;
 
                         if (!dryrun)
                         {
-                            var result = SaveAsset(payload, "ep_asset_create");
+                            var result = SaveAsset(seedNode.ToJsonString(), "ep_asset_create");
                             newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
                             if (string.IsNullOrEmpty(newAssetNumber))
                             {
@@ -756,10 +818,7 @@ namespace T1Sync
                             newAssetNumber = $"DRYRUN_NEW_ROW_{row}";
                         }
 
-                        // Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
-                        var seedAsset = FetchAsset(seedId);
-                        
-                        // Replace all occurrences of the seed's asset number with the new one
+                        // Use the seed string replacement for further local updates
                         var seedStr = seedAsset.GetRawText().Replace(seedId, newAssetNumber);
                         node = JsonNode.Parse(seedStr)!.AsObject();
 
@@ -829,12 +888,14 @@ namespace T1Sync
 
             wb.Save();
             Debug.WriteLine($"Synced spreadsheet at {xlsxPath}");
-            return xlsxPath;
+            onlineHelper.SaveBackToOnline();
+            return file;
         }
 
         public string ExtractAsset(string file, string sheet, int firstRow, int lastRow)
         {
-            var xlsxPath = file;
+            using var onlineHelper = new OnlineExcelHelper(file);
+            var xlsxPath = onlineHelper.LocalFilePath;
             using var wb = new XLWorkbook(xlsxPath);
 
             var sheetName = SanitizeSheetName(sheet);
@@ -910,13 +971,14 @@ namespace T1Sync
             try
             {
                 wb.Save();
-                Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
+                onlineHelper.SaveBackToOnline();
+                Debug.WriteLine($"Updated spreadsheet at {file}");
             }
             catch (IOException ex)
             {
                 Debug.WriteLine($"Error: Could not save to {xlsxPath} because it is open in another program. ({ex.Message})");
             }
-            return xlsxPath;
+            return file;
         }
 
     }
