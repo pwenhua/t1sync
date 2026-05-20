@@ -353,11 +353,10 @@ class T1Client:
                 asset_reg_col = idx
 
         asset_register = self.svc_config.get("asset_register") or self.svc_config.get("asset register")
-        target_class = sheet.replace("_", "\\")
         template_id = None
         seed_id = None
         for t in self.svc_config.get("asset_classes", []):
-            if t.get("class") in (target_class, sheet):
+            if t.get("class") == sheet:
                 template_id = t.get("template")
                 seed_id = t.get("seed")
                 break
@@ -371,10 +370,10 @@ class T1Client:
                     asset = self.fetch_asset(asset_number)
                 else:
                     if not template_id:
-                        ws.cell(row=row, column=27, value=f"Missing 'template' for class '{target_class}'.")
+                        ws.cell(row=row, column=27, value=f"Missing 'template' for class '{sheet}'.")
                         continue
                     if not seed_id:
-                        ws.cell(row=row, column=27, value=f"Missing 'seed' for class '{target_class}'.")
+                        ws.cell(row=row, column=27, value=f"Missing 'seed' for class '{sheet}'.")
                         continue
 
                     print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
@@ -395,6 +394,12 @@ class T1Client:
 
                     # Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
                     asset = self.fetch_asset(seed_id)
+                    
+                    # Replace all occurrences of the seed's asset number with the new one
+                    asset_str = json.dumps(asset)
+                    asset_str = asset_str.replace(seed_id, new_asset_number)
+                    asset = json.loads(asset_str)
+
                     asset["AssetNumber"] = new_asset_number
                     if new_asset_register:
                         asset["AssetRegisterName"] = new_asset_register
@@ -407,7 +412,12 @@ class T1Client:
                         if code and suffix and level.startswith("level_"):
                             T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
                     elif header:
+                        if header == "AssetRegisterName":
+                            continue
                         asset[header] = cell_value
+
+                if asset_register:
+                    asset["AssetRegisterName"] = asset_register
 
                 self.save_asset(asset)
                 ws.cell(row=row, column=27, value="")
@@ -448,8 +458,18 @@ class T1Client:
             for col in range(1, max_col + 1)
         ]
 
+        asset_num_col = None
+        for idx, h in enumerate(headers, start=1):
+            if h[4].lower() == "assetnumber":
+                asset_num_col = idx
+                break
+
+        if not asset_num_col:
+            print(f"  -> No 'AssetNumber' header found in sheet {sheet_name}.")
+            return xlsx_path
+
         for row in range(first_row, last_row + 1):
-            asset_number = ws.cell(row=row, column=2).value
+            asset_number = ws.cell(row=row, column=asset_num_col).value
             if asset_number in (None, ""):
                 continue
             try:
@@ -457,6 +477,8 @@ class T1Client:
                 asset = self.fetch_asset(str(asset_number))
 
                 for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
+                    if header.lower() == "assetnumber":
+                        continue
                     value = T1Client._extract_value(asset, attr_code, level, suffix, header)
                     if value is not None:
                         ws.cell(row=row, column=col_idx, value=value)
@@ -464,6 +486,9 @@ class T1Client:
             except Exception as e:
                 ws.cell(row=row, column=27, value=str(e))
 
-        wb.save(xlsx_path)
-        print(f"Updated spreadsheet at {xlsx_path}")
+        try:
+            wb.save(xlsx_path)
+            print(f"Updated spreadsheet at {xlsx_path}")
+        except PermissionError:
+            print(f"Error: Could not save to {xlsx_path} because it is open in another program (like Excel). Please close it and try again.")
         return xlsx_path

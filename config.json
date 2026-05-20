@@ -29,8 +29,8 @@
             "asset_classes":
             [
                 {
-                    "class":"Tree\\Street Tree",
-                    "seed": "0100017",
+                    "class":"Tree/Street Tree",
+                    "seed": "0100038",
                     "template": "0100008"
                 }
             ]

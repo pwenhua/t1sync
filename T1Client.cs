@@ -644,6 +644,13 @@ namespace T1Sync
                 return xlsxPath;
             }
 
+            string trueAssetType = sheet;
+            int underscoreIdx = trueAssetType.IndexOf('_');
+            if (underscoreIdx >= 0)
+            {
+                trueAssetType = trueAssetType.Substring(0, underscoreIdx) + "/" + trueAssetType.Substring(underscoreIdx + 1);
+            }
+
             var ws = wb.Worksheet(sheetName);
             var lastUsed = ws.LastColumnUsed();
             var maxCol = lastUsed?.ColumnNumber() ?? 0;
@@ -677,13 +684,12 @@ namespace T1Sync
 
             string? templateId = null;
             string? seedId = null;
-            var targetClass = sheet.Replace("_", "\\");
             if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
             {
                 foreach (var t in templates.EnumerateArray())
                 {
                     var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
-                    if (cls == targetClass || cls == sheet)
+                    if (cls == sheet)
                     {
                         templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
                         seedId = t.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
@@ -710,12 +716,12 @@ namespace T1Sync
                     {
                         if (string.IsNullOrEmpty(templateId))
                         {
-                            ws.Cell(row, "AA").Value = $"Missing 'template' for class '{targetClass}'.";
+                            ws.Cell(row, "AA").Value = $"Missing 'template' for class '{sheet}'.";
                             continue;
                         }
                         if (string.IsNullOrEmpty(seedId))
                         {
-                            ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{targetClass}'.";
+                            ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{sheet}'.";
                             continue;
                         }
 
@@ -741,7 +747,11 @@ namespace T1Sync
 
                         // Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
                         var seedAsset = FetchAsset(seedId);
-                        node = JsonNode.Parse(seedAsset.GetRawText())!.AsObject();
+                        
+                        // Replace all occurrences of the seed's asset number with the new one
+                        var seedStr = seedAsset.GetRawText().Replace(seedId, newAssetNumber);
+                        node = JsonNode.Parse(seedStr)!.AsObject();
+
                         node["AssetNumber"] = newAssetNumber;
                         if (!string.IsNullOrEmpty(newAssetRegister)) node["AssetRegisterName"] = newAssetRegister;
                     }
@@ -749,7 +759,24 @@ namespace T1Sync
                     for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                     {
                         var (kind, code, level, suffix, header) = headers[colIdx];
-                        var cellValue = ReadCellValue(ws.Cell(row, colIdx + 1));
+                        var cell = ws.Cell(row, colIdx + 1);
+                        var cellValue = ReadCellValue(cell);
+
+                        bool isAssetType = string.Equals(header, "asset_type", StringComparison.OrdinalIgnoreCase) || 
+                                           string.Equals(header, "AssetType", StringComparison.OrdinalIgnoreCase) ||
+                                           string.Equals(code, "asset_type", StringComparison.OrdinalIgnoreCase) || 
+                                           string.Equals(code, "AssetType", StringComparison.OrdinalIgnoreCase);
+
+                        if (isAssetType)
+                        {
+                            var cellValueStr = cellValue?.ToString() ?? "";
+                            if (!string.Equals(cellValueStr, trueAssetType, StringComparison.OrdinalIgnoreCase))
+                            {
+                                cell.Style.Fill.BackgroundColor = XLColor.Yellow;
+                            }
+                            cellValue = trueAssetType;
+                        }
+
                         if (cellValue == null || (cellValue is string s && string.IsNullOrEmpty(s))) continue;
 
                         if (kind == "Attribute")
@@ -761,8 +788,14 @@ namespace T1Sync
                         }
                         else if (!string.IsNullOrEmpty(header))
                         {
+                            if (header.Equals("AssetRegisterName", StringComparison.OrdinalIgnoreCase)) continue;
                             node[header] = JsonSerializer.SerializeToNode(cellValue);
                         }
+                    }
+
+                    if (!string.IsNullOrEmpty(assetRegister))
+                    {
+                        node["AssetRegisterName"] = assetRegister;
                     }
 
                     SaveAsset(node.ToJsonString());
@@ -808,9 +841,25 @@ namespace T1Sync
                     ));
                 }
 
+                int? assetNumCol = null;
+                for (int i = 0; i < headers.Count; i++)
+                {
+                    if (headers[i].Item5.Equals("AssetNumber", StringComparison.OrdinalIgnoreCase))
+                    {
+                        assetNumCol = i + 1;
+                        break;
+                    }
+                }
+
+                if (!assetNumCol.HasValue)
+                {
+                    Debug.WriteLine($"  -> No 'AssetNumber' header found in sheet {sheetName}.");
+                    return xlsxPath;
+                }
+
                 for (int row = firstRow; row <= lastRow; row++)
                 {
-                    var assetNumber = ws.Cell(row, 2).GetString();
+                    var assetNumber = ws.Cell(row, assetNumCol.Value).GetString();
                     if (string.IsNullOrEmpty(assetNumber)) continue;
 
                     try
@@ -821,6 +870,8 @@ namespace T1Sync
                         for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                         {
                             var (attrCode, level, suffix, _, header) = headers[colIdx];
+                            if (header.Equals("AssetNumber", StringComparison.OrdinalIgnoreCase)) continue;
+
                             var val = ExtractValue(asset, attrCode, level, suffix, header);
                             if (val != null)
                             {
@@ -836,8 +887,15 @@ namespace T1Sync
                 }
             }
 
-            wb.Save();
-            Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
+            try
+            {
+                wb.Save();
+                Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
+            }
+            catch (IOException ex)
+            {
+                Debug.WriteLine($"Error: Could not save to {xlsxPath} because it is open in another program. ({ex.Message})");
+            }
             return xlsxPath;
         }
 
