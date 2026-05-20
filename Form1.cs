@@ -33,7 +33,7 @@ namespace T1Sync
             //var path = client.SaveMetaToExcel(xlsxFile);
             //var path = client.ExtractAsset(xlsxFile, sheet, firstRow, lastRow);
 
-            var path = client.SyncAssetFromExcel(xlsxFile, sheet, firstRow, lastRow, dryrun: true);
+            var path = client.SyncAssetFromExcel(xlsxFile, sheet, firstRow, lastRow);
         }
     }
 }

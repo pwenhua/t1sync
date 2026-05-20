@@ -24,10 +24,18 @@ namespace T1Sync
         public T1Client_ClosedXML(string service, string configPath = DefaultConfigPath)
             : base(service, configPath) { }
 
-        public new string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryrun = false)
+        public new string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow)
         {
             // Same control flow as T1Client.SyncAssetFromExcel, minus the
             // OnlineExcelHelper round-trip. `file` is opened directly with ClosedXML.
+            //
+            // Create flow:
+            //   1) POST minimal {AssetRegisterName, TemplateAssetNumberInternal} to
+            //      ep_asset_create → returns the new AssetNumber.
+            //   2) FetchAsset(newAssetNumber) — use the freshly-created asset as the seed.
+            //   3) Apply cell values on top.
+            //   4) POST via SaveAsset (ep_asset_save) to persist updates.
+            //   5) Always export the final payload to c:\temp\payload.txt for inspection.
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
 
@@ -79,7 +87,6 @@ namespace T1Sync
             }
 
             string? templateId = null;
-            string? seedId = null;
             if (SvcConfig.TryGetProperty("asset_classes", out var assetClasses) && assetClasses.ValueKind == JsonValueKind.Object)
             {
                 foreach (var prop in assetClasses.EnumerateObject())
@@ -87,7 +94,6 @@ namespace T1Sync
                     if (string.Equals(prop.Name, trueAssetType, StringComparison.OrdinalIgnoreCase))
                     {
                         templateId = prop.Value.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
-                        seedId = prop.Value.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
                         break;
                     }
                 }
@@ -114,50 +120,32 @@ namespace T1Sync
                             ws.Cell(row, "AA").Value = $"Missing 'template' for class '{trueAssetType}'.";
                             continue;
                         }
-                        if (string.IsNullOrEmpty(seedId))
-                        {
-                            ws.Cell(row, "AA").Value = $"Missing 'seed' for class '{trueAssetType}'.";
-                            continue;
-                        }
 
                         Debug.WriteLine($"  -> {sheetName} row {row}: creating asset from template {templateId}");
 
-                        var seedAsset = FetchAsset(seedId);
-                        var seedNode = JsonNode.Parse(seedAsset.GetRawText())!.AsObject();
-
-                        seedNode["AssetRegisterName"] = assetRegister;
-                        seedNode["TemplateAssetNumberInternal"] = templateId;
-                        seedNode["AssetNumber"] = null;
-
-                        string? newAssetNumber = null;
-                        string? newAssetRegister = assetRegister;
-
-                        if (!dryrun)
+                        // 1) Create from template with a minimal payload.
+                        var createPayload = new Dictionary<string, string?>
                         {
-                            var result = SaveAsset(seedNode.ToJsonString(), "ep_asset_create");
-                            newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
-                            if (string.IsNullOrEmpty(newAssetNumber))
-                            {
-                                ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
-                                continue;
-                            }
-                            newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
-                            if (assetNumCol.HasValue) SetCellValueLocal(ws.Cell(row, assetNumCol.Value), newAssetNumber);
-                            if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
-                            {
-                                SetCellValueLocal(ws.Cell(row, assetRegCol.Value), newAssetRegister);
-                            }
+                            ["AssetRegisterName"] = assetRegister,
+                            ["TemplateAssetNumberInternal"] = templateId,
+                        };
+                        var result = SaveAsset(createPayload, "ep_asset_create");
+                        var newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
+                        if (string.IsNullOrEmpty(newAssetNumber))
+                        {
+                            ws.Cell(row, "AA").Value = "Create returned no AssetNumber.";
+                            continue;
                         }
-                        else
+                        var newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
+                        if (assetNumCol.HasValue) SetCellValueLocal(ws.Cell(row, assetNumCol.Value), newAssetNumber);
+                        if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
                         {
-                            newAssetNumber = $"DRYRUN_NEW_ROW_{row}";
+                            SetCellValueLocal(ws.Cell(row, assetRegCol.Value), newAssetRegister);
                         }
 
-                        // Build the update payload from the original seed with seed_id retargeted.
-                        var seedStr = seedAsset.GetRawText().Replace(seedId, newAssetNumber);
-                        node = JsonNode.Parse(seedStr)!.AsObject();
-                        node["AssetNumber"] = newAssetNumber;
-                        if (!string.IsNullOrEmpty(newAssetRegister)) node["AssetRegisterName"] = newAssetRegister;
+                        // 2) Fetch the just-created asset; use it as the seed payload.
+                        var createdAsset = FetchAsset(newAssetNumber);
+                        node = JsonNode.Parse(createdAsset.GetRawText())!.AsObject();
                     }
 
                     for (int colIdx = 0; colIdx < headers.Count; colIdx++)
@@ -203,18 +191,13 @@ namespace T1Sync
                         node["AssetRegisterName"] = assetRegister;
                     }
 
-                    if (dryrun)
-                    {
-                        Directory.CreateDirectory(@"c:\temp");
-                        var dumpPath = @"c:\temp\payload.txt";
-                        File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-                        ws.Cell(row, "AA").Value = $"Dry run: Payload saved to {Path.GetFileName(dumpPath)}";
-                    }
-                    else
-                    {
-                        SaveAsset(node.ToJsonString());
-                        ws.Cell(row, "AA").Value = "";
-                    }
+                    // Always dump the final payload to c:\temp\payload.txt for inspection.
+                    Directory.CreateDirectory(@"c:\temp");
+                    var dumpPath = @"c:\temp\payload.txt";
+                    File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+                    SaveAsset(node.ToJsonString());
+                    ws.Cell(row, "AA").Value = $"Saved; payload dumped to {Path.GetFileName(dumpPath)}";
                 }
                 catch (Exception ex)
                 {
