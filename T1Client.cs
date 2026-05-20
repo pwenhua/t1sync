@@ -615,11 +615,9 @@ namespace T1Sync
                 var sp = (string?)entry["SearchPath"] ?? "";
                 var entryLevel = string.IsNullOrEmpty(sp) ? 0 : sp.Split('\\').Length;
                 if (entryLevel != targetLevel) continue;
-                if (entry.ContainsKey(valueKey))
-                {
-                    entry[valueKey] = value == null ? null : JsonSerializer.SerializeToNode(value);
-                    return;
-                }
+                
+                entry[valueKey] = value == null ? null : JsonSerializer.SerializeToNode(value);
+                return;
             }
         }
 
