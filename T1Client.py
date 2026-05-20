@@ -312,15 +312,25 @@ class T1Client:
 
         For each row in [first_row, last_row] of the named sheet:
         - If column 2 (AssetNumber) is a non-empty string → fetch that asset.
-        - If column 2 is blank → POST to ep_asset_create with the sheet's template
-          (from svc_config['asset_classes']), then fetch the **seed** asset (also
-          from asset_classes) and use it as the JSON shape, patching in the new
-          AssetNumber/AssetRegisterName so save_asset() targets the new asset.
-        - Apply each non-blank cell value to the asset:
-            * row-1 = 'Attribute' with level_N in row 3 → mutate AssetAttributes.
-            * row-1 blank → overwrite the top-level field named in row 6.
-        - POST the modified JSON via save_asset()."""
+        - If column 2 is blank → use the *seed* asset (svc_config['asset_classes'])
+          as the create payload (patched with AssetRegisterName /
+          TemplateAssetNumberInternal / AssetNumber=None), POST to ep_asset_create,
+          then build the update payload from the original seed JSON with seed_id
+          string-replaced by the new AssetNumber so cross-refs get retargeted.
+        - Apply each non-blank cell value:
+            * row-1 = 'Attribute' with level_N → mutate AssetAttributes.
+            * row-1 blank → overwrite the top-level field named in row 6
+              (AssetRegisterName is forced from svc_config below, not cells).
+            * ASSET_TYPE columns are highlighted yellow if the cell doesn't match
+              the sheet-derived class name, and forced to that class name.
+        - Force AssetRegisterName from svc_config.
+        - POST the modified JSON via save_asset().
+
+        When `dryrun=True`: skip ep_asset_create and ep_asset_save POSTs and write
+        the constructed payload to c:\\temp\\payload.txt for review."""
+        import os
         from openpyxl import load_workbook  # lazy import
+        from openpyxl.styles import PatternFill
 
         xlsx_path = Path(file)
         wb = load_workbook(xlsx_path)
@@ -329,6 +339,11 @@ class T1Client:
         if sheet_name not in wb.sheetnames:
             print(f"  -> Sheet {sheet_name} not found in workbook.")
             return xlsx_path
+
+        # Sheet name like "Tree_Street Tree" → class name "Tree/Street Tree"
+        # (first underscore becomes '/'); used to look up asset_classes config.
+        underscore_idx = sheet.find("_")
+        true_asset_type = (sheet[:underscore_idx] + "/" + sheet[underscore_idx + 1:]) if underscore_idx >= 0 else sheet
 
         ws = wb[sheet_name]
         max_col = ws.max_column
@@ -353,74 +368,104 @@ class T1Client:
                 asset_reg_col = idx
 
         asset_register = self.svc_config.get("asset_register") or self.svc_config.get("asset register")
+
         template_id = None
         seed_id = None
-        for t in self.svc_config.get("asset_classes", []):
-            if t.get("class") == sheet:
-                template_id = t.get("template")
-                seed_id = t.get("seed")
-                break
+        asset_classes = self.svc_config.get("asset_classes", {})
+        if isinstance(asset_classes, dict):
+            for class_name, class_cfg in asset_classes.items():
+                if class_name.lower() == true_asset_type.lower():
+                    template_id = class_cfg.get("template")
+                    seed_id = class_cfg.get("seed")
+                    break
+
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
         for row in range(first_row, last_row + 1):
             try:
-                asset_number = ws.cell(row=row, column=2).value
+                asset_number_val = ws.cell(row=row, column=2).value
+                asset_number = asset_number_val.strip() if isinstance(asset_number_val, str) else ""
 
-                if isinstance(asset_number, str) and asset_number.strip():
+                if asset_number:
                     print(f"  -> {sheet_name} row {row}: updating asset {asset_number}")
                     asset = self.fetch_asset(asset_number)
                 else:
                     if not template_id:
-                        ws.cell(row=row, column=27, value=f"Missing 'template' for class '{sheet}'.")
+                        ws.cell(row=row, column=27, value=f"Missing 'template' for class '{true_asset_type}'.")
                         continue
                     if not seed_id:
-                        ws.cell(row=row, column=27, value=f"Missing 'seed' for class '{sheet}'.")
+                        ws.cell(row=row, column=27, value=f"Missing 'seed' for class '{true_asset_type}'.")
                         continue
 
                     print(f"  -> {sheet_name} row {row}: creating asset from template {template_id}")
-                    payload = {
-                        "AssetRegisterName": asset_register,
-                        "TemplateAssetNumberInternal": template_id,
-                    }
-                    result = self.save_asset(payload, endpoint="ep_asset_create")
-                    new_asset_number = result.get("AssetNumber") if isinstance(result, dict) else None
-                    if not new_asset_number:
-                        ws.cell(row=row, column=27, value="Create returned no AssetNumber.")
-                        continue
-                    new_asset_register = (result.get("AssetRegisterName") if isinstance(result, dict) else None) or asset_register
-                    if asset_num_col:
-                        ws.cell(row=row, column=asset_num_col, value=new_asset_number)
-                    if asset_reg_col and new_asset_register:
-                        ws.cell(row=row, column=asset_reg_col, value=new_asset_register)
 
-                    # Use seed as the JSON template; retarget AssetNumber/AssetRegisterName.
-                    asset = self.fetch_asset(seed_id)
-                    
-                    # Replace all occurrences of the seed's asset number with the new one
-                    asset_str = json.dumps(asset)
-                    asset_str = asset_str.replace(seed_id, new_asset_number)
-                    asset = json.loads(asset_str)
+                    # Fetch the seed; snapshot raw JSON for later seed_id replacement.
+                    seed_asset = self.fetch_asset(seed_id)
+                    seed_raw_str = json.dumps(seed_asset)
 
+                    # Patch seed in place for the create call.
+                    seed_asset["AssetRegisterName"] = asset_register
+                    seed_asset["TemplateAssetNumberInternal"] = template_id
+                    seed_asset["AssetNumber"] = None
+
+                    if not dryrun:
+                        result = self.save_asset(seed_asset, endpoint="ep_asset_create")
+                        new_asset_number = result.get("AssetNumber") if isinstance(result, dict) else None
+                        if not new_asset_number:
+                            ws.cell(row=row, column=27, value="Create returned no AssetNumber.")
+                            continue
+                        new_asset_register = (result.get("AssetRegisterName") if isinstance(result, dict) else None) or asset_register
+                        if asset_num_col:
+                            ws.cell(row=row, column=asset_num_col, value=new_asset_number)
+                        if asset_reg_col and new_asset_register:
+                            ws.cell(row=row, column=asset_reg_col, value=new_asset_register)
+                    else:
+                        new_asset_number = f"DRYRUN_NEW_ROW_{row}"
+                        new_asset_register = asset_register
+
+                    # Build the update payload from the original seed with seed_id retargeted.
+                    asset = json.loads(seed_raw_str.replace(seed_id, new_asset_number))
                     asset["AssetNumber"] = new_asset_number
                     if new_asset_register:
                         asset["AssetRegisterName"] = new_asset_register
 
                 for col_idx, (kind, code, level, suffix, header) in enumerate(headers, start=1):
-                    cell_value = ws.cell(row=row, column=col_idx).value
+                    cell = ws.cell(row=row, column=col_idx)
+                    cell_value = cell.value
+
+                    # Only the top-level ASSET_TYPE column (where row-6 header == "ASSET_TYPE")
+                    # gets forced to true_asset_type. Captioned attributes have code == "ASSET_TYPE"
+                    # but their headers are captions ("Near Power Line", "Height(m)", ...).
+                    is_asset_type = header.lower() in ("asset_type", "assettype")
+                    if is_asset_type:
+                        cell_value_str = str(cell_value) if cell_value is not None else ""
+                        if cell_value_str.lower() != true_asset_type.lower():
+                            cell.fill = yellow_fill
+                        cell_value = true_asset_type
+
                     if cell_value is None or cell_value == "":
                         continue
+
                     if kind == "Attribute":
                         if code and suffix and level.startswith("level_"):
                             T1Client._set_attribute_value(asset, code, level, suffix, cell_value)
                     elif header:
-                        if header == "AssetRegisterName":
+                        if header.lower() == "assetregistername":
                             continue
                         asset[header] = cell_value
 
                 if asset_register:
                     asset["AssetRegisterName"] = asset_register
 
-                self.save_asset(asset)
-                ws.cell(row=row, column=27, value="")
+                if dryrun:
+                    os.makedirs(r"c:\temp", exist_ok=True)
+                    dump_path = r"c:\temp\payload.txt"
+                    with open(dump_path, "w", encoding="utf-8") as f:
+                        json.dump(asset, f, indent=2, ensure_ascii=False)
+                    ws.cell(row=row, column=27, value=f"Dry run: Payload saved to {os.path.basename(dump_path)}")
+                else:
+                    self.save_asset(asset)
+                    ws.cell(row=row, column=27, value="")
             except Exception as e:
                 ws.cell(row=row, column=27, value=str(e))
 
@@ -480,19 +525,6 @@ class T1Client:
                     if header.lower() == "assetnumber":
                         continue
                     value = T1Client._extract_value(asset, attr_code, level, suffix, header)
-                    if value is not None:
-                        ws.cell(row=row, column=col_idx, value=value)
-                ws.cell(row=row, column=27, value="")
-            except Exception as e:
-                ws.cell(row=row, column=27, value=str(e))
-
-        try:
-            wb.save(xlsx_path)
-            print(f"Updated spreadsheet at {xlsx_path}")
-        except PermissionError:
-            print(f"Error: Could not save to {xlsx_path} because it is open in another program (like Excel). Please close it and try again.")
-        return xlsx_path
-t, attr_code, level, suffix, header)
                     if value is not None:
                         ws.cell(row=row, column=col_idx, value=value)
                 ws.cell(row=row, column=27, value="")

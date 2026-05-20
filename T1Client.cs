@@ -600,8 +600,15 @@ namespace T1Sync
 
         private static void SetAttributeValue(JsonObject asset, string attrCode, string level, string suffix, object? value)
         {
-            // Mutate asset["AssetAttributes"] in place: overwrite AttributeItem<suffix>
-            // on the entry matching attrCode + level.
+            // Mutate asset["AssetAttributes"] in place: replace AttributeItem<suffix>
+            // on the single entry whose AttributeCode + SearchPath-level match.
+            //
+            // Example for "Near Power Line" with meta ["ASSET_TYPE", "level_2", "Userfield1", "A"]:
+            //   - targetLevel = 2  (level_N → integer)
+            //   - valueKey    = "AttributeItemUserfield1"
+            //   - scan AssetAttributes for the entry where AttributeCode == "ASSET_TYPE"
+            //     and SearchPath splits into 2 segments on '\' (e.g. "Tree\Street Tree")
+            //   - replace entry["AttributeItemUserfield1"] with the cell value.
             if (!level.StartsWith("level_")) return;
             if (!int.TryParse(level.Substring("level_".Length), out var targetLevel)) return;
 
@@ -615,7 +622,8 @@ namespace T1Sync
                 var sp = (string?)entry["SearchPath"] ?? "";
                 var entryLevel = string.IsNullOrEmpty(sp) ? 0 : sp.Split('\\').Length;
                 if (entryLevel != targetLevel) continue;
-                
+                if (!entry.ContainsKey(valueKey)) continue;
+
                 entry[valueKey] = value == null ? null : JsonSerializer.SerializeToNode(value);
                 return;
             }
@@ -635,7 +643,9 @@ namespace T1Sync
                 if (IsOnline)
                 {
                     _app = new Application();
-                    _app.DisplayAlerts = false;
+                    // For debugging — flip these to see Excel and any error/auth dialogs it raises.
+                    _app.Visible = true;
+                    _app.DisplayAlerts = true;
                     var wb = _app.Workbooks.Open(file);
                     LocalFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".xlsx");
                     wb.SaveAs(LocalFilePath);
@@ -650,12 +660,24 @@ namespace T1Sync
 
             public void SaveBackToOnline()
             {
-                if (IsOnline && _app != null)
+                if (!IsOnline || _app == null) return;
+
+                Microsoft.Office.Interop.Excel.Workbook? wb = null;
+                try
                 {
-                    var wb = _app.Workbooks.Open(LocalFilePath);
-                    wb.SaveAs(_originalFile);
-                    wb.Close();
-                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                    wb = _app.Workbooks.Open(LocalFilePath);
+                    // SaveAs to a URL needs an explicit FileFormat; the default overload
+                    // often throws COMException 0x800A03EC. Force xlsx + take local changes
+                    // if there's a conflict.
+                    wb.SaveAs(
+                        Filename: _originalFile,
+                        FileFormat: Microsoft.Office.Interop.Excel.XlFileFormat.xlOpenXMLWorkbook,
+                        ConflictResolution: Microsoft.Office.Interop.Excel.XlSaveConflictResolution.xlLocalSessionChanges);
+                    wb.Close(SaveChanges: false);
+                }
+                finally
+                {
+                    if (wb != null) System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
                 }
             }
 
@@ -830,10 +852,11 @@ namespace T1Sync
                         var cell = ws.Cell(row, colIdx + 1);
                         var cellValue = ReadCellValue(cell);
 
-                        bool isAssetType = string.Equals(header, "asset_type", StringComparison.OrdinalIgnoreCase) || 
-                                           string.Equals(header, "AssetType", StringComparison.OrdinalIgnoreCase) ||
-                                           string.Equals(code, "asset_type", StringComparison.OrdinalIgnoreCase) || 
-                                           string.Equals(code, "AssetType", StringComparison.OrdinalIgnoreCase);
+                        // Only the top-level ASSET_TYPE column (where row-6 header == "ASSET_TYPE")
+                        // gets forced to trueAssetType. Captioned attributes have code == "ASSET_TYPE"
+                        // but their headers are captions ("Near Power Line", "Height(m)", ...).
+                        bool isAssetType = string.Equals(header, "asset_type", StringComparison.OrdinalIgnoreCase) ||
+                                           string.Equals(header, "AssetType", StringComparison.OrdinalIgnoreCase);
 
                         if (isAssetType)
                         {
@@ -868,7 +891,8 @@ namespace T1Sync
 
                     if (dryrun)
                     {
-                        var dumpPath = Path.Combine(Path.GetDirectoryName(xlsxPath) ?? "", "payload.txt");
+                        var dumpPath = @"c:\temp\payload.txt";
+                        Directory.CreateDirectory(@"c:\temp");
                         File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
                         ws.Cell(row, "AA").Value = $"Dry run: Payload saved to {Path.GetFileName(dumpPath)}";
                     }
