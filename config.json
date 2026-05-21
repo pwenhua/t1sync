@@ -13,7 +13,7 @@
 
             "ep_asset_get": {
                 "method": "GET",
-                "url": "Api/WS/v2/Asset/Read/TP_AR/"
+                "url": "Api/WS/v2/Asset/Read/"
             },
 
             "ep_asset_save": {
@@ -33,6 +33,15 @@
                     "template": "0100008"
                 }
             }
+        }
+    },
+
+    "database": 
+    {
+        "local":{
+            "type": "sqlserver",
+            "connection_string": "Server=localhost;Database=AssetDB;Trusted_Connection=True;TrustServerCertificate=True;",
+            "table": "t1.workshop"
         }
     }
 }

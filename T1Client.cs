@@ -121,7 +121,17 @@ namespace T1Sync
             var ep = _svcConfig.GetProperty(endpoint);
             var baseUrl = _svcConfig.GetProperty("base_url").GetString()!.TrimEnd('/') + "/";
             var path = ep.GetProperty("url").GetString()!.TrimStart('/');
-            var url = baseUrl + path + testId;
+
+            // Insert the service's asset register (e.g. "TP_AR") between path and id.
+            var assetRegister = "";
+            if (_svcConfig.TryGetProperty("asset register", out var arProp) ||
+                _svcConfig.TryGetProperty("asset_register", out arProp))
+            {
+                assetRegister = arProp.GetString()?.Trim('/') ?? "";
+            }
+            var registerSegment = string.IsNullOrEmpty(assetRegister) ? "" : assetRegister + "/";
+
+            var url = baseUrl + path + registerSegment + testId;
 
             HttpResponseMessage Request(string token)
             {

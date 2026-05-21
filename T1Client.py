@@ -47,7 +47,12 @@ class T1Client:
         ep = self.svc_config[endpoint]
         base = self.svc_config["base_url"].rstrip("/") + "/"
         path = ep["url"].lstrip("/")
-        url = base + path + asset_number
+
+        # Insert the service's asset register (e.g. "TP_AR") between path and id.
+        asset_register = (self.svc_config.get("asset register") or self.svc_config.get("asset_register") or "").strip("/")
+        register_segment = (asset_register + "/") if asset_register else ""
+
+        url = base + path + register_segment + asset_number
 
         def _request(token: str) -> requests.Response:
             headers = {"Authorization": f"Bearer {token}"}
