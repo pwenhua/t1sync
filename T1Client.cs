@@ -716,7 +716,7 @@ namespace T1Sync
             //      * row-1 blank → overwrite the top-level field named in row 6.
             //  - POST the modified JSON via SaveAsset().
 
-            var maxCol = 50;
+            var maxCol = 26;
             Application xlApp = new Application();
             xlApp.DisplayAlerts = false; 
             var wb = xlApp.Workbooks.Open(excelFilePath, 0, false);
@@ -777,8 +777,8 @@ namespace T1Sync
                 {
                     try
                     {
-                        var assetCell = ws.Cess[row, 2];
-                        var assetNumber = assetCell.Value.IsText ? assetCell.GetString() : "";
+                        var assetCell = ws.Cells[row, 2];
+                        var assetNumber = Convert.ToString(assetCell.Value) ?? "";
 
                         JsonObject node;
                         if (!string.IsNullOrWhiteSpace(assetNumber))
@@ -791,12 +791,12 @@ namespace T1Sync
                         {
                             if (string.IsNullOrEmpty(templateId))
                             {
-                                ws.Cells[row, "AA"].Value = $"Missing 'template' for class '{trueAssetType}'.";
+                                ws.Cells[row, 27].Value = $"Missing 'template' for class '{trueAssetType}'.";
                                 continue;
                             }
                             if (string.IsNullOrEmpty(seedId))
                             {
-                                ws.Cess[row, "AA"].Value = $"Missing 'seed' for class '{trueAssetType}'.";
+                                ws.Cells[row, 27].Value = $"Missing 'seed' for class '{trueAssetType}'.";
                                 continue;
                             }
 
@@ -821,14 +821,14 @@ namespace T1Sync
                                 newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
                                 if (string.IsNullOrEmpty(newAssetNumber))
                                 {
-                                    ws.Cess[row, "AA"].Value = "Create returned no AssetNumber.";
+                                    ws.Cells[row, 27].Value = "Create returned no AssetNumber.";
                                     continue;
                                 }
                                 newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
-                                if (assetNumCol.HasValue) SetCellValue(ws.Cells[row, assetNumCol.Value], newAssetNumber);
+                                if (assetNumCol.HasValue) ws.Cells[row, assetNumCol.Value].Value = newAssetNumber;
                                 if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
                                 {
-                                    SetCellValue(ws.Cells[row, assetRegCol.Value], newAssetRegister);
+                                    ws.Cells[row, assetRegCol.Value].Value = newAssetRegister;
                                 }
                             }
                             else
@@ -848,7 +848,7 @@ namespace T1Sync
                         {
                             var (kind, code, level, suffix, header) = headers[colIdx];
                             var cell = ws.Cells[row, colIdx + 1];
-                            var cellValue = ReadCellValue(cell);
+                            var cellValue = cell.Value;
 
                             // Only the top-level ASSET_TYPE column (where row-6 header == "ASSET_TYPE")
                             // gets forced to trueAssetType. Captioned attributes have code == "ASSET_TYPE"
@@ -861,7 +861,7 @@ namespace T1Sync
                                 var cellValueStr = cellValue?.ToString() ?? "";
                                 if (!string.Equals(cellValueStr, trueAssetType, StringComparison.OrdinalIgnoreCase))
                                 {
-                                    cell.Style.Fill.BackgroundColor = XLColor.Yellow;
+                                    cell.Interior.ColorIndex = 6; // Yellow
                                 }
                                 cellValue = trueAssetType;
                             }
@@ -892,67 +892,71 @@ namespace T1Sync
                             var dumpPath = @"c:\temp\payload.txt";
                             Directory.CreateDirectory(@"c:\temp");
                             File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-                            ws.Cells[row, "AA"].Value = $"Dry run: Payload saved to {Path.GetFileName(dumpPath)}";
+                            ws.Cells[row, 27].Value = $"Dry run: Payload saved to {Path.GetFileName(dumpPath)}";
                         }
                         else
                         {
                             SaveAsset(node.ToJsonString());
-                            ws.Cells[row, "AA"].Value = "";
+                            ws.Cells[row, 27].Value = "";
                         }
                     }
                     catch (Exception ex)
                     {
-                        ws.Cells[row, "AA"].Value = ex.Message;
+                        ws.Cells[row, 27].Value = ex.Message;
                     }
                 }
 
-                wb.Save();  
+                wb.Save(); 
+                Debug.WriteLine($"Updated spreadsheet at {excelFilePath}");
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message);
+                Debug.WriteLine($"Error: {ex.Message}");
             }
             finally
             {
                 if (wb != null)
                 {
-                    wb.Save();
-                    wb.Close();
+                    try { wb.Close(); } catch { }
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
                 }
 
                 xlApp.Quit();
                 System.Runtime.InteropServices.Marshal.ReleaseComObject(xlApp);
-
             }
         }
 
         public string ExtractAsset(string file, string sheet, int firstRow, int lastRow)
         {
-            using var onlineHelper = new OnlineExcelHelper(file);
-            var xlsxPath = onlineHelper.LocalFilePath;
-            using var wb = new XLWorkbook(xlsxPath);
-
-            var sheetName = SanitizeSheetName(sheet);
-            if (!wb.Worksheets.Contains(sheetName))
+            var maxCol = 50;
+            Application xlApp = new Application();
+            xlApp.DisplayAlerts = false;
+            Microsoft.Office.Interop.Excel.Workbook? wb = null;
+            try
             {
-                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
-                return xlsxPath;
-            }
+                wb = xlApp.Workbooks.Open(file, 0, false);
+                var sheetName = SanitizeSheetName(sheet);
 
-            {
-                var ws = wb.Worksheet(sheetName);
-                var lastUsed = ws.LastColumnUsed();
-                var maxCol = lastUsed?.ColumnNumber() ?? 0;
+                Microsoft.Office.Interop.Excel.Worksheet ws;
+                try
+                {
+                    ws = wb.Worksheets[sheetName];
+                }
+                catch
+                {
+                    Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
+                    return file;
+                }
 
                 var headers = new List<(string, string, string, string, string)>();
                 for (int col = 1; col <= maxCol; col++)
                 {
                     headers.Add((
-                        ws.Cell(2, col).GetString() ?? "",
-                        ws.Cell(3, col).GetString() ?? "",
-                        ws.Cell(4, col).GetString() ?? "",
-                        ws.Cell(5, col).GetString() ?? "",
-                        ws.Cell(6, col).GetString() ?? ""
+                        Convert.ToString(ws.Cells[2, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[3, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[4, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[5, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[6, col].Value) ?? ""
                     ));
                 }
 
@@ -969,12 +973,12 @@ namespace T1Sync
                 if (!assetNumCol.HasValue)
                 {
                     Debug.WriteLine($"  -> No 'AssetNumber' header found in sheet {sheetName}.");
-                    return xlsxPath;
+                    return file;
                 }
 
                 for (int row = firstRow; row <= lastRow; row++)
                 {
-                    var assetNumber = ws.Cell(row, assetNumCol.Value).GetString();
+                    var assetNumber = Convert.ToString(ws.Cells[row, assetNumCol.Value].Value);
                     if (string.IsNullOrEmpty(assetNumber)) continue;
 
                     try
@@ -990,27 +994,34 @@ namespace T1Sync
                             var val = ExtractValue(asset, attrCode, level, suffix, header);
                             if (val != null)
                             {
-                                SetCellValue(ws.Cell(row, colIdx + 1), val);
+                                ws.Cells[row, colIdx + 1].Value = val;
                             }
                         }
-                        ws.Cell(row, "AA").Value = "";
+                        ws.Cells[row, 27].Value = "";
                     }
                     catch (Exception ex)
                     {
-                        ws.Cell(row, "AA").Value = ex.Message;
+                        ws.Cells[row, 27].Value = ex.Message;
                     }
                 }
-            }
 
-            try
-            {
-                wb.Save(); 
-
+                wb.Save();
                 Debug.WriteLine($"Updated spreadsheet at {file}");
             }
-            catch (IOException ex)
+            catch (Exception ex)
             {
-                Debug.WriteLine($"Error: Could not save to {xlsxPath} because it is open in another program. ({ex.Message})");
+                Debug.WriteLine($"Error: {ex.Message}");
+            }
+            finally
+            {
+                if (wb != null)
+                {
+                    try { wb.Close(); } catch { }
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
+
+                xlApp.Quit();
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(xlApp);
             }
             return file;
         }
