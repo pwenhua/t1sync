@@ -38,7 +38,7 @@
 
     "database": 
     {
-        "local":{
+        "PENG":{
             "type": "sqlserver",
             "connection_string": "Server=localhost;Database=AssetDB;Trusted_Connection=True;TrustServerCertificate=True;",
             "table": "t1.workshop"

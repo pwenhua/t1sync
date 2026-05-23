@@ -1,6 +1,8 @@
 #define USE_CLOSEDXML
 
-// T1Client.cs - C# port of T1Client.py (synchronous)
+// T1Client_Interop.cs - T1 client that uses Microsoft.Office.Interop.Excel
+// (Excel COM) for spreadsheet I/O. Use this when the workbook lives on
+// SharePoint/OneDrive (http(s) URL). For local files, prefer T1Client_ClosedXML.
 //
 // Loads config.json, caches the OAuth2 access token, and exposes
 // FetchAsset / SaveAsset / ParseAssetMeta / GetMetaLookup that mirror
@@ -23,6 +25,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Application = Microsoft.Office.Interop.Excel.Application;
 using DocumentFormat.OpenXml.Spreadsheet;
+using Microsoft.Data.SqlClient;
 
 #if USE_CLOSEDXML
 using ClosedXML.Excel;
@@ -30,7 +33,7 @@ using ClosedXML.Excel;
 
 namespace T1Sync
 {
-    public class T1Client
+    public class T1Client_Interop
     {
         public const string DefaultConfigPath = @"..\..\..\config.json";
 
@@ -53,7 +56,7 @@ namespace T1Sync
         private readonly JsonElement _svcConfig;
         private string? _token;
 
-        public T1Client(string service, string configPath = DefaultConfigPath)
+        public T1Client_Interop(string service, string configPath = DefaultConfigPath)
         {
             if (string.IsNullOrEmpty(service))
                 throw new ArgumentException("Service name must be provided.", nameof(service));
@@ -516,7 +519,7 @@ namespace T1Sync
             throw new NotImplementedException(
                 "SaveMetaToExcel requires the ClosedXML NuGet package. " +
                 "To enable it, install ClosedXML and uncomment '#define USE_CLOSEDXML' " +
-                "at the top of T1Client.cs (or add it to your project properties)."
+                "at the top of T1Client_Interop.cs (or add it to your project properties)."
             );
 #endif
         }
@@ -936,12 +939,14 @@ namespace T1Sync
             }
         }
 
-        public string ExtractAsset(string file, string sheet, int firstRow, int lastRow)
+        public string ExtractAsset(string file, string sheet, int firstRow, int lastRow, string? databaseInstance = null)
         {
             var maxCol = 50;
             Application xlApp = new Application();
             xlApp.DisplayAlerts = false;
             Microsoft.Office.Interop.Excel.Workbook? wb = null;
+            SqlConnection? dbConn = null;
+            string? dbTable = null;
             try
             {
                 wb = xlApp.Workbooks.Open(file, 0, false);
@@ -986,6 +991,27 @@ namespace T1Sync
                     return file;
                 }
 
+                // Optional: open a SQL connection if a valid databaseInstance is configured.
+                if (!string.IsNullOrEmpty(databaseInstance))
+                {
+                    using var stream = File.OpenRead(ConfigPath);
+                    using var doc = JsonDocument.Parse(stream);
+                    if (doc.RootElement.TryGetProperty("database", out var dbRoot) &&
+                        dbRoot.TryGetProperty(databaseInstance, out var dbInst) &&
+                        dbInst.TryGetProperty("connection_string", out var connStrProp) &&
+                        dbInst.TryGetProperty("table", out var tableProp))
+                    {
+                        dbTable = tableProp.GetString();
+                        dbConn = new SqlConnection(connStrProp.GetString());
+                        dbConn.Open();
+                        Debug.WriteLine($"  -> DB '{databaseInstance}' connected; geometry → {dbTable}");
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"  -> DB instance '{databaseInstance}' not found / incomplete in config.database.");
+                    }
+                }
+
                 for (int row = firstRow; row <= lastRow; row++)
                 {
                     var assetNumber = Convert.ToString(ws.Cells[row, assetNumCol.Value].Value);
@@ -1007,7 +1033,21 @@ namespace T1Sync
                                 ws.Cells[row, colIdx + 1].Value = val;
                             }
                         }
-                        ws.Cells[row, 27].Value = "";
+
+                        string? dbError = null;
+                        if (dbConn != null && !string.IsNullOrEmpty(dbTable))
+                        {
+                            try
+                            {
+                                ExtractGeometryToDb(asset, assetNumber, dbConn, dbTable);
+                            }
+                            catch (Exception dbEx)
+                            {
+                                dbError = "DB: " + dbEx.Message;
+                            }
+                        }
+
+                        ws.Cells[row, 27].Value = dbError ?? "";
                     }
                     catch (Exception ex)
                     {
@@ -1024,6 +1064,8 @@ namespace T1Sync
             }
             finally
             {
+                dbConn?.Dispose();
+
                 if (wb != null)
                 {
                     try { wb.Close(); } catch { }
@@ -1034,6 +1076,46 @@ namespace T1Sync
                 System.Runtime.InteropServices.Marshal.ReleaseComObject(xlApp);
             }
             return file;
+        }
+
+        private static void ExtractGeometryToDb(JsonElement asset, string assetNumber, SqlConnection conn, string table)
+        {
+            // Navigate to MapLayers[0]; bail unless it's a POINT.
+            if (!asset.TryGetProperty("MapLayers", out var mapLayers)) return;
+            if (mapLayers.ValueKind != JsonValueKind.Array || mapLayers.GetArrayLength() == 0) return;
+
+            var firstLayer = mapLayers[0];
+            if (!firstLayer.TryGetProperty("GeometryType", out var gt)) return;
+            if (!string.Equals(gt.GetString(), "POINT", StringComparison.OrdinalIgnoreCase)) return;
+
+            if (!firstLayer.TryGetProperty("Points", out var points) || points.ValueKind != JsonValueKind.Array) return;
+
+            var coords = new List<(double Lat, double Lon)>();
+            foreach (var pt in points.EnumerateArray())
+            {
+                if (!pt.TryGetProperty("PointLocation", out var loc)) continue;
+                if (!loc.TryGetProperty("Latitude", out var latP) || !latP.TryGetDouble(out var lat)) continue;
+                if (!loc.TryGetProperty("Longitude", out var lonP) || !lonP.TryGetDouble(out var lon)) continue;
+                coords.Add((lat, lon));
+            }
+            if (coords.Count == 0) return;
+
+            // WKT uses (longitude latitude) order.
+            string wkt = coords.Count == 1
+                ? $"POINT ({coords[0].Lon} {coords[0].Lat})"
+                : "MULTIPOINT (" + string.Join(", ", coords.Select(c => $"({c.Lon} {c.Lat})")) + ")";
+
+            using (var del = new SqlCommand($"DELETE FROM {table} WHERE compkey = @compkey", conn))
+            {
+                del.Parameters.AddWithValue("@compkey", assetNumber);
+                del.ExecuteNonQuery();
+            }
+            using (var ins = new SqlCommand($"INSERT INTO {table} (compkey, wkt) VALUES (@compkey, @wkt)", conn))
+            {
+                ins.Parameters.AddWithValue("@compkey", assetNumber);
+                ins.Parameters.AddWithValue("@wkt", wkt);
+                ins.ExecuteNonQuery();
+            }
         }
 
     }

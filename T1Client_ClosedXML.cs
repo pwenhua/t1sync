@@ -1,10 +1,10 @@
-// T1Client_ClosedXML.cs - drop-in alternative to T1Client that uses ClosedXML
-// only (no Microsoft.Office.Interop.Excel / no OnlineExcelHelper).
+// T1Client_ClosedXML.cs - drop-in alternative to T1Client_Interop that uses
+// ClosedXML only (no Microsoft.Office.Interop.Excel / no OnlineExcelHelper).
 //
 // The 'file' parameter must be a local path; SharePoint/OneDrive URLs are not
 // supported here (download/upload them separately if needed).
 //
-// Usage: replace `new T1Client("workshop-TP")` with
+// Usage: replace `new T1Client_Interop("workshop-TP")` with
 //                `new T1Client_ClosedXML("workshop-TP")`.
 
 using System;
@@ -16,17 +16,18 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ClosedXML.Excel;
+using Microsoft.Data.SqlClient;
 
 namespace T1Sync
 {
-    public class T1Client_ClosedXML : T1Client
+    public class T1Client_ClosedXML : T1Client_Interop
     {
         public T1Client_ClosedXML(string service, string configPath = DefaultConfigPath)
             : base(service, configPath) { }
 
         public new string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryrun = false)
         {
-            // Same control flow as T1Client.SyncAssetFromExcel, minus the
+            // Same control flow as T1Client_Interop.SyncAssetFromExcel, minus the
             // OnlineExcelHelper round-trip. `file` is opened directly with ClosedXML.
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
@@ -227,7 +228,7 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public new string ExtractAsset(string file, string sheet, int firstRow, int lastRow)
+        public new string ExtractAsset(string file, string sheet, int firstRow, int lastRow, string? databaseInstance = null)
         {
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
@@ -271,31 +272,75 @@ namespace T1Sync
                 return xlsxPath;
             }
 
-            for (int row = firstRow; row <= lastRow; row++)
+            // Optional: open a SQL connection if a valid databaseInstance is configured.
+            SqlConnection? dbConn = null;
+            string? dbTable = null;
+            if (!string.IsNullOrEmpty(databaseInstance))
             {
-                var assetNumber = ws.Cell(row, assetNumCol.Value).GetString();
-                if (string.IsNullOrEmpty(assetNumber)) continue;
-
-                try
+                using var stream = File.OpenRead(ConfigPath);
+                using var doc = JsonDocument.Parse(stream);
+                if (doc.RootElement.TryGetProperty("database", out var dbRoot) &&
+                    dbRoot.TryGetProperty(databaseInstance, out var dbInst) &&
+                    dbInst.TryGetProperty("connection_string", out var connStrProp) &&
+                    dbInst.TryGetProperty("table", out var tableProp))
                 {
-                    Debug.WriteLine($"  -> {ws.Name} row {row}: fetching asset {assetNumber}");
-                    var asset = FetchAsset(assetNumber);
+                    dbTable = tableProp.GetString();
+                    dbConn = new SqlConnection(connStrProp.GetString());
+                    dbConn.Open();
+                    Debug.WriteLine($"  -> DB '{databaseInstance}' connected; geometry → {dbTable}");
+                }
+                else
+                {
+                    Debug.WriteLine($"  -> DB instance '{databaseInstance}' not found / incomplete in config.database.");
+                }
+            }
 
-                    for (int colIdx = 0; colIdx < headers.Count; colIdx++)
+            try
+            {
+                for (int row = firstRow; row <= lastRow; row++)
+                {
+                    var assetNumber = ws.Cell(row, assetNumCol.Value).GetString();
+                    if (string.IsNullOrEmpty(assetNumber)) continue;
+
+                    try
                     {
-                        var (attrCode, level, suffix, _, header) = headers[colIdx];
-                        var val = ExtractValueLocal(asset, attrCode, level, suffix, header);
-                        if (val != null)
+                        Debug.WriteLine($"  -> {ws.Name} row {row}: fetching asset {assetNumber}");
+                        var asset = FetchAsset(assetNumber);
+
+                        for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                         {
-                            SetCellValueLocal(ws.Cell(row, colIdx + 1), val);
+                            var (attrCode, level, suffix, _, header) = headers[colIdx];
+                            var val = ExtractValueLocal(asset, attrCode, level, suffix, header);
+                            if (val != null)
+                            {
+                                SetCellValueLocal(ws.Cell(row, colIdx + 1), val);
+                            }
                         }
+
+                        string? dbError = null;
+                        if (dbConn != null && !string.IsNullOrEmpty(dbTable))
+                        {
+                            try
+                            {
+                                ExtractGeometryToDb(asset, assetNumber, dbConn, dbTable);
+                            }
+                            catch (Exception dbEx)
+                            {
+                                dbError = "DB: " + dbEx.Message;
+                            }
+                        }
+
+                        ws.Cell(row, "AA").Value = dbError ?? "";
                     }
-                    ws.Cell(row, "AA").Value = "";
+                    catch (Exception ex)
+                    {
+                        ws.Cell(row, "AA").Value = ex.Message;
+                    }
                 }
-                catch (Exception ex)
-                {
-                    ws.Cell(row, "AA").Value = ex.Message;
-                }
+            }
+            finally
+            {
+                dbConn?.Dispose();
             }
 
             wb.Save();
@@ -303,7 +348,48 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        // ------- Local copies of the private helpers from T1Client (so this file is self-contained) -------
+        private static void ExtractGeometryToDb(JsonElement asset, string assetNumber, SqlConnection conn, string table)
+        {
+            // Navigate to the first MapLayers entry; bail if missing or not a POINT.
+            if (!asset.TryGetProperty("MapLayers", out var mapLayers)) return;
+            if (mapLayers.ValueKind != JsonValueKind.Array || mapLayers.GetArrayLength() == 0) return;
+
+            var firstLayer = mapLayers[0];
+            if (!firstLayer.TryGetProperty("GeometryType", out var gt)) return;
+            if (!string.Equals(gt.GetString(), "POINT", StringComparison.OrdinalIgnoreCase)) return;
+
+            if (!firstLayer.TryGetProperty("Points", out var points) || points.ValueKind != JsonValueKind.Array) return;
+
+            var coords = new List<(double Lat, double Lon)>();
+            foreach (var pt in points.EnumerateArray())
+            {
+                if (!pt.TryGetProperty("PointLocation", out var loc)) continue;
+                if (!loc.TryGetProperty("Latitude", out var latP) || !latP.TryGetDouble(out var lat)) continue;
+                if (!loc.TryGetProperty("Longitude", out var lonP) || !lonP.TryGetDouble(out var lon)) continue;
+                coords.Add((lat, lon));
+            }
+            if (coords.Count == 0) return;
+
+            // WKT uses (longitude latitude) order.
+            string wkt = coords.Count == 1
+                ? $"POINT ({coords[0].Lon} {coords[0].Lat})"
+                : "MULTIPOINT (" + string.Join(", ", coords.Select(c => $"({c.Lon} {c.Lat})")) + ")";
+
+            // Idempotent upsert: delete existing row for this compkey, then insert.
+            using (var del = new SqlCommand($"DELETE FROM {table} WHERE compkey = @compkey", conn))
+            {
+                del.Parameters.AddWithValue("@compkey", assetNumber);
+                del.ExecuteNonQuery();
+            }
+            using (var ins = new SqlCommand($"INSERT INTO {table} (compkey, wkt) VALUES (@compkey, @wkt)", conn))
+            {
+                ins.Parameters.AddWithValue("@compkey", assetNumber);
+                ins.Parameters.AddWithValue("@wkt", wkt);
+                ins.ExecuteNonQuery();
+            }
+        }
+
+        // ------- Local copies of the private helpers from T1Client_Interop (so this file is self-contained) -------
 
         private static string SanitizeSheetNameLocal(string name)
         {

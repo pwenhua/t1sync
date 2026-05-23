@@ -291,6 +291,62 @@ class T1Client:
         return None
 
     @staticmethod
+    def is_online(file) -> bool:
+        """True if `file` looks like an http(s) URL.
+        Python's T1Client uses openpyxl which only handles local files;
+        callers can use this to validate and fall back to a download step."""
+        return isinstance(file, str) and file.lower().startswith("http")
+
+    @staticmethod
+    def _odbc_conn_str(net_conn_str: str) -> str:
+        """Adapt a .NET-style connection string for pyodbc.
+        Adds a DRIVER prefix if missing; the rest of the keywords are
+        accepted by the SQL Server ODBC driver as-is."""
+        upper = net_conn_str.upper()
+        if upper.startswith("DRIVER=") or ";DRIVER=" in upper:
+            return net_conn_str
+        return f"DRIVER={{ODBC Driver 17 for SQL Server}};{net_conn_str}"
+
+    @staticmethod
+    def _extract_geometry_to_db(asset: dict, asset_number: str, conn, table: str) -> None:
+        """Extract MapLayers[0] POINT geometry from `asset` and upsert into
+        `table` keyed by `compkey = asset_number`, with WKT in column `wkt`."""
+        layers = asset.get("MapLayers")
+        if not isinstance(layers, list) or not layers:
+            return
+        first = layers[0]
+        if str(first.get("GeometryType", "")).upper() != "POINT":
+            return
+        points = first.get("Points")
+        if not isinstance(points, list):
+            return
+
+        coords: list[tuple[float, float]] = []
+        for pt in points:
+            loc = pt.get("PointLocation") if isinstance(pt, dict) else None
+            if not isinstance(loc, dict):
+                continue
+            try:
+                lat = float(loc["Latitude"])
+                lon = float(loc["Longitude"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            coords.append((lat, lon))
+        if not coords:
+            return
+
+        # WKT uses (longitude latitude) order.
+        if len(coords) == 1:
+            wkt = f"POINT ({coords[0][1]} {coords[0][0]})"
+        else:
+            wkt = "MULTIPOINT (" + ", ".join(f"({lon} {lat})" for lat, lon in coords) + ")"
+
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table} WHERE compkey = ?", asset_number)
+        cur.execute(f"INSERT INTO {table} (compkey, wkt) VALUES (?, ?)", asset_number, wkt)
+        conn.commit()
+
+    @staticmethod
     def _set_attribute_value(asset: dict, attr_code: str, level: str, suffix: str, value) -> None:
         """Mutate asset['AssetAttributes'] in place: overwrite AttributeItem<suffix>
         on the entry matching attr_code + level."""
@@ -478,12 +534,17 @@ class T1Client:
         print(f"Synced spreadsheet at {xlsx_path}")
         return xlsx_path
 
-    def extract_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int) -> Path:
+    def extract_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int,
+                      database_instance: str | None = None) -> Path:
         """Populate spreadsheet rows of one sheet with live asset values.
 
         For each row in [first_row, last_row] of the named sheet, read the
-        AssetNumber from column 2, fetch the asset, and write a value into every
-        column based on its 6-row header tuple (row 1 = kind)."""
+        AssetNumber, fetch the asset, and write a value into every column
+        based on its 6-row header tuple (row 1 = kind).
+
+        If `database_instance` is given and `config['database'][database_instance]`
+        has `connection_string` + `table`, also extract MapLayers[0] POINT
+        geometry to the configured table (compkey, wkt) — one row per asset."""
         from openpyxl import load_workbook  # lazy import
 
         xlsx_path = Path(file)
@@ -518,23 +579,51 @@ class T1Client:
             print(f"  -> No 'AssetNumber' header found in sheet {sheet_name}.")
             return xlsx_path
 
-        for row in range(first_row, last_row + 1):
-            asset_number = ws.cell(row=row, column=asset_num_col).value
-            if asset_number in (None, ""):
-                continue
-            try:
-                print(f"  -> {sheet_name} row {row}: fetching asset {asset_number}")
-                asset = self.fetch_asset(str(asset_number))
+        # Optional: open a SQL connection if a valid database_instance is configured.
+        db_conn = None
+        db_table = None
+        if database_instance:
+            db_cfg = self.config.get("database", {}).get(database_instance)
+            if db_cfg and db_cfg.get("connection_string") and db_cfg.get("table"):
+                import pyodbc  # lazy import
+                db_table = db_cfg["table"]
+                db_conn = pyodbc.connect(T1Client._odbc_conn_str(db_cfg["connection_string"]))
+                print(f"  -> DB '{database_instance}' connected; geometry -> {db_table}")
+            else:
+                print(f"  -> DB instance '{database_instance}' not found / incomplete in config.database.")
 
-                for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
-                    if header.lower() == "assetnumber":
-                        continue
-                    value = T1Client._extract_value(asset, attr_code, level, suffix, header)
-                    if value is not None:
-                        ws.cell(row=row, column=col_idx, value=value)
-                ws.cell(row=row, column=27, value="")
-            except Exception as e:
-                ws.cell(row=row, column=27, value=str(e))
+        try:
+            for row in range(first_row, last_row + 1):
+                asset_number = ws.cell(row=row, column=asset_num_col).value
+                if asset_number in (None, ""):
+                    continue
+                try:
+                    print(f"  -> {sheet_name} row {row}: fetching asset {asset_number}")
+                    asset = self.fetch_asset(str(asset_number))
+
+                    for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
+                        if header.lower() == "assetnumber":
+                            continue
+                        value = T1Client._extract_value(asset, attr_code, level, suffix, header)
+                        if value is not None:
+                            ws.cell(row=row, column=col_idx, value=value)
+
+                    db_error = None
+                    if db_conn is not None and db_table:
+                        try:
+                            T1Client._extract_geometry_to_db(asset, str(asset_number), db_conn, db_table)
+                        except Exception as db_ex:
+                            db_error = f"DB: {db_ex}"
+
+                    ws.cell(row=row, column=27, value=db_error or "")
+                except Exception as e:
+                    ws.cell(row=row, column=27, value=str(e))
+        finally:
+            if db_conn is not None:
+                try:
+                    db_conn.close()
+                except Exception:
+                    pass
 
         try:
             wb.save(xlsx_path)
