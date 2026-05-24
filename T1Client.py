@@ -309,9 +309,12 @@ class T1Client:
 
     @staticmethod
     def _extract_geometry_to_db(asset: dict, asset_number: str, conn, table: str) -> None:
-        """Extract MapLayers[0] POINT geometry from `asset` and upsert into
-        `table` keyed by `compkey = asset_number`, with WKT in column `wkt`."""
-        layers = asset.get("MapLayers")
+        """Extract AssetMap.MapLayers[0] POINT geometry from `asset` and upsert
+        into `table` keyed by `compkey = asset_number`, with WKT in column `wkt`."""
+        asset_map = asset.get("AssetMap")
+        if not isinstance(asset_map, dict):
+            return
+        layers = asset_map.get("MapLayers")
         if not isinstance(layers, list) or not layers:
             return
         first = layers[0]

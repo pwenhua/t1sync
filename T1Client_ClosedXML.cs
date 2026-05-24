@@ -350,8 +350,9 @@ namespace T1Sync
 
         private static void ExtractGeometryToDb(JsonElement asset, string assetNumber, SqlConnection conn, string table)
         {
-            // Navigate to the first MapLayers entry; bail if missing or not a POINT.
-            if (!asset.TryGetProperty("MapLayers", out var mapLayers)) return;
+            // Navigate to AssetMap.MapLayers[0]; bail if missing or not a POINT.
+            if (!asset.TryGetProperty("AssetMap", out var assetMap)) return;
+            if (!assetMap.TryGetProperty("MapLayers", out var mapLayers)) return;
             if (mapLayers.ValueKind != JsonValueKind.Array || mapLayers.GetArrayLength() == 0) return;
 
             var firstLayer = mapLayers[0];
