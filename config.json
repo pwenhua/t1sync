@@ -13,7 +13,7 @@
 
             "ep_asset_get": {
                 "method": "GET",
-                "url": "Api/WS/v2/Asset/Read/TP_AR/"
+                "url": "Api/WS/v2/Asset/Read/"
             },
 
             "ep_asset_save": {
@@ -27,13 +27,21 @@
             },
 
             "asset_classes":
-            [
-                {
-                    "class":"Tree\\Street Tree",
-                    "seed": "0100017",
+            {
+                "Tree/Street Tree": {
+                    "seed": "0100038",
                     "template": "0100008"
                 }
-            ]
+            }
+        }
+    },
+
+    "database": 
+    {
+        "local":{
+            "type": "sqlserver",
+            "connection_string": "Server=PENG;Database=AssetDB;Trusted_Connection=True;TrustServerCertificate=True;",
+            "table": "t1.workshop"
         }
     }
 }

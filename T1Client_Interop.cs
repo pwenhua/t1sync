@@ -1,6 +1,8 @@
 #define USE_CLOSEDXML
 
-// T1Client.cs - C# port of T1Client.py (synchronous)
+// T1Client_Interop.cs - T1 client that uses Microsoft.Office.Interop.Excel
+// (Excel COM) for spreadsheet I/O. Use this when the workbook lives on
+// SharePoint/OneDrive (http(s) URL). For local files, prefer T1Client_ClosedXML.
 //
 // Loads config.json, caches the OAuth2 access token, and exposes
 // FetchAsset / SaveAsset / ParseAssetMeta / GetMetaLookup that mirror
@@ -21,13 +23,17 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Application = Microsoft.Office.Interop.Excel.Application;
+using DocumentFormat.OpenXml.Spreadsheet;
+using Microsoft.Data.SqlClient;
+
 #if USE_CLOSEDXML
 using ClosedXML.Excel;
 #endif
 
 namespace T1Sync
 {
-    public class T1Client
+    public class T1Client_Interop
     {
         public const string DefaultConfigPath = @"..\..\..\config.json";
 
@@ -50,7 +56,7 @@ namespace T1Sync
         private readonly JsonElement _svcConfig;
         private string? _token;
 
-        public T1Client(string service, string configPath = DefaultConfigPath)
+        public T1Client_Interop(string service, string configPath = DefaultConfigPath)
         {
             if (string.IsNullOrEmpty(service))
                 throw new ArgumentException("Service name must be provided.", nameof(service));
@@ -118,7 +124,17 @@ namespace T1Sync
             var ep = _svcConfig.GetProperty(endpoint);
             var baseUrl = _svcConfig.GetProperty("base_url").GetString()!.TrimEnd('/') + "/";
             var path = ep.GetProperty("url").GetString()!.TrimStart('/');
-            var url = baseUrl + path + testId;
+
+            // Insert the service's asset register (e.g. "TP_AR") between path and id.
+            var assetRegister = "";
+            if (_svcConfig.TryGetProperty("asset register", out var arProp) ||
+                _svcConfig.TryGetProperty("asset_register", out arProp))
+            {
+                assetRegister = arProp.GetString()?.Trim('/') ?? "";
+            }
+            var registerSegment = string.IsNullOrEmpty(assetRegister) ? "" : assetRegister + "/";
+
+            var url = baseUrl + path + registerSegment + testId;
 
             HttpResponseMessage Request(string token)
             {
@@ -503,7 +519,7 @@ namespace T1Sync
             throw new NotImplementedException(
                 "SaveMetaToExcel requires the ClosedXML NuGet package. " +
                 "To enable it, install ClosedXML and uncomment '#define USE_CLOSEDXML' " +
-                "at the top of T1Client.cs (or add it to your project properties)."
+                "at the top of T1Client_Interop.cs (or add it to your project properties)."
             );
 #endif
         }
@@ -599,8 +615,15 @@ namespace T1Sync
 
         private static void SetAttributeValue(JsonObject asset, string attrCode, string level, string suffix, object? value)
         {
-            // Mutate asset["AssetAttributes"] in place: overwrite AttributeItem<suffix>
-            // on the entry matching attrCode + level.
+            // Mutate asset["AssetAttributes"] in place: replace AttributeItem<suffix>
+            // on the single entry whose AttributeCode + SearchPath-level match.
+            //
+            // Example for "Near Power Line" with meta ["ASSET_TYPE", "level_2", "Userfield1", "A"]:
+            //   - targetLevel = 2  (level_N → integer)
+            //   - valueKey    = "AttributeItemUserfield1"
+            //   - scan AssetAttributes for the entry where AttributeCode == "ASSET_TYPE"
+            //     and SearchPath splits into 2 segments on '\' (e.g. "Tree\Street Tree")
+            //   - replace entry["AttributeItemUserfield1"] with the cell value.
             if (!level.StartsWith("level_")) return;
             if (!int.TryParse(level.Substring("level_".Length), out var targetLevel)) return;
 
@@ -614,14 +637,86 @@ namespace T1Sync
                 var sp = (string?)entry["SearchPath"] ?? "";
                 var entryLevel = string.IsNullOrEmpty(sp) ? 0 : sp.Split('\\').Length;
                 if (entryLevel != targetLevel) continue;
-                if (entry.ContainsKey(valueKey))
+                if (!entry.ContainsKey(valueKey)) continue;
+
+                entry[valueKey] = value == null ? null : JsonSerializer.SerializeToNode(value);
+                return;
+            }
+        }
+
+        private class OnlineExcelHelper : IDisposable
+        {
+            private Application? _app;
+            private string _originalFile;
+            public string LocalFilePath { get; }
+            public bool IsOnline { get; }
+
+            public OnlineExcelHelper(string file)
+            {
+                _originalFile = file;
+                IsOnline = file.StartsWith("http", StringComparison.OrdinalIgnoreCase);
+                if (IsOnline)
                 {
-                    entry[valueKey] = value == null ? null : JsonSerializer.SerializeToNode(value);
-                    return;
+                    _app = new Application();
+                    // For debugging — flip these to see Excel and any error/auth dialogs it raises.
+                    _app.Visible = true;
+                    _app.DisplayAlerts = true;
+                    var wb = _app.Workbooks.Open(file);
+                    LocalFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".xlsx");
+                    wb.SaveAs(LocalFilePath);
+                    wb.Close();
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
+                else
+                {
+                    LocalFilePath = file;
+                }
+            }
+
+            public void SaveBackToOnline()
+            {
+                if (!IsOnline || _app == null) return;
+
+                Microsoft.Office.Interop.Excel.Workbook? wb = null;
+                try
+                {
+                    wb = _app.Workbooks.Open(LocalFilePath); 
+                    wb.Save();
+                }
+                finally
+                { 
+                    if (wb != null)
+                    {
+                        wb.Save();
+                        wb.Close();
+                    }
+
+                    _app.Quit();
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(_app);
+
+
+                }
+            }
+
+            public void Dispose()
+            {
+                if (IsOnline)
+                {
+                    if (_app != null)
+                    {
+                        _app.Quit();
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(_app);
+                        _app = null;
+                    }
+                    if (File.Exists(LocalFilePath))
+                    {
+                        try { File.Delete(LocalFilePath); } catch { }
+                    }
                 }
             }
         }
 
+<<<<<<< HEAD:T1Client.cs
         public string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryRun = false)
         {
             // Sync a sheet to T1: update existing assets, create new ones for blank rows.
@@ -640,66 +735,81 @@ namespace T1Sync
             // payload to <xlsx_dir>/dry_run_<sheet>_<row>.json for review.
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
+=======
+        public void SyncAssetFromExcel(string excelFilePath, string sheet, int firstRow, int lastRow, bool dryrun = false)
+        {
+            // Sync a sheet to T1: update existing assets, create new ones for blank rows.
+            //  - If column 2 (AssetNumber) is a non-empty text cell → fetch that asset.
+            //  - If blank → POST to ep_asset_create with the sheet's template (from
+            //    svc_config['asset_classes']), then fetch the *seed* asset (also from
+            //    asset_classes) and use it as the JSON shape, patching in the new
+            //    AssetNumber/AssetRegisterName so SaveAsset targets the new asset.
+            //  - Apply each non-blank cell value:
+            //      * row-1 "Attribute" with level_N → mutate AssetAttributes.
+            //      * row-1 blank → overwrite the top-level field named in row 6.
+            //  - POST the modified JSON via SaveAsset().
+>>>>>>> working1:T1Client_Interop.cs
 
-            var sheetName = SanitizeSheetName(sheet);
-            if (!wb.Worksheets.Contains(sheetName))
+            var maxCol = 26;
+            Application xlApp = new Application();
+            xlApp.DisplayAlerts = false; 
+            var wb = xlApp.Workbooks.Open(excelFilePath, 0, false);
+            try
             {
-                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
-                return xlsxPath;
-            }
-
-            var ws = wb.Worksheet(sheetName);
-            var lastUsed = ws.LastColumnUsed();
-            var maxCol = lastUsed?.ColumnNumber() ?? 0;
-
-            var headers = new List<(string Kind, string Code, string Level, string Suffix, string Header)>();
-            for (int col = 1; col <= maxCol; col++)
-            {
-                headers.Add((
-                    ws.Cell(1, col).GetString() ?? "",
-                    ws.Cell(2, col).GetString() ?? "",
-                    ws.Cell(3, col).GetString() ?? "",
-                    ws.Cell(4, col).GetString() ?? "",
-                    ws.Cell(6, col).GetString() ?? ""
-                ));
-            }
-
-            int? assetNumCol = null;
-            int? assetRegCol = null;
-            for (int i = 0; i < headers.Count; i++)
-            {
-                if (headers[i].Header == "AssetNumber") assetNumCol = i + 1;
-                else if (headers[i].Header == "AssetRegisterName") assetRegCol = i + 1;
-            }
-
-            string? assetRegister = null;
-            if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
-                _svcConfig.TryGetProperty("asset register", out arProp))
-            {
-                assetRegister = arProp.GetString();
-            }
-
-            string? templateId = null;
-            string? seedId = null;
-            var targetClass = sheet.Replace("_", "\\");
-            if (_svcConfig.TryGetProperty("asset_classes", out var templates) && templates.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var t in templates.EnumerateArray())
+                string trueAssetType = sheet;
+                int underscoreIdx = trueAssetType.IndexOf('_');
+                if (underscoreIdx >= 0)
                 {
-                    var cls = t.TryGetProperty("class", out var cProp) ? cProp.GetString() : null;
-                    if (cls == targetClass || cls == sheet)
+                    trueAssetType = trueAssetType.Substring(0, underscoreIdx) + "/" + trueAssetType.Substring(underscoreIdx + 1);
+                }
+
+                var ws = wb.Worksheets[sheet];              
+
+                var headers = new List<(string Kind, string Code, string Level, string Suffix, string Header)>();
+                for (int col = 1; col <= maxCol; col++)
+                {
+                    headers.Add((
+                        ws.Cells[1, col].Value ?? "",
+                        ws.Cells[2, col].Value ?? "",
+                        ws.Cells[3, col].Value ?? "",
+                        ws.Cells[4, col].Value ?? "",
+                        ws.Cells[6, col].Value ?? ""
+                    ));
+                }
+
+                int? assetNumCol = null;
+                int? assetRegCol = null;
+                for (int i = 0; i < headers.Count; i++)
+                {
+                    if (headers[i].Header == "AssetNumber") assetNumCol = i + 1;
+                    else if (headers[i].Header == "AssetRegisterName") assetRegCol = i + 1;
+                }
+
+                string? assetRegister = null;
+                if (_svcConfig.TryGetProperty("asset_register", out var arProp) ||
+                    _svcConfig.TryGetProperty("asset register", out arProp))
+                {
+                    assetRegister = arProp.GetString();
+                }
+
+                string? templateId = null;
+                string? seedId = null;
+                if (_svcConfig.TryGetProperty("asset_classes", out var assetClasses) && assetClasses.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in assetClasses.EnumerateObject())
                     {
-                        templateId = t.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
-                        seedId = t.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
-                        break;
+                        if (string.Equals(prop.Name, trueAssetType, StringComparison.OrdinalIgnoreCase))
+                        {
+                            templateId = prop.Value.TryGetProperty("template", out var tmpProp) ? tmpProp.GetString() : null;
+                            seedId = prop.Value.TryGetProperty("seed", out var seedProp) ? seedProp.GetString() : null;
+                            break;
+                        }
                     }
                 }
-            }
 
-            for (int row = firstRow; row <= lastRow; row++)
-            {
-                try
+                for (int row = firstRow; row <= lastRow; row++)
                 {
+<<<<<<< HEAD:T1Client.cs
                     var assetCell = ws.Cell(row, 2);
                     var assetNumber = assetCell.Value.IsText ? assetCell.GetString() : "";
                     var isCreate = string.IsNullOrWhiteSpace(assetNumber);
@@ -738,16 +848,140 @@ namespace T1Sync
                         if (kind == "Attribute")
                         {
                             if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
+=======
+                    try
+                    {
+                        var assetCell = ws.Cells[row, 2];
+                        var assetNumber = Convert.ToString(assetCell.Value) ?? "";
+
+                        JsonObject node;
+                        if (!string.IsNullOrWhiteSpace(assetNumber))
+                        {
+                            Debug.WriteLine($"  -> {sheet} row {row}: updating asset {assetNumber}");
+                            var asset = FetchAsset(assetNumber);
+                            node = JsonNode.Parse(asset.GetRawText())!.AsObject();
+                        }
+                        else
+                        {
+                            if (string.IsNullOrEmpty(templateId))
+>>>>>>> working1:T1Client_Interop.cs
                             {
-                                SetAttributeValue(node, code, level, suffix, cellValue);
+                                ws.Cells[row, 27].Value = $"Missing 'template' for class '{trueAssetType}'.";
+                                continue;
+                            }
+                            if (string.IsNullOrEmpty(seedId))
+                            {
+                                ws.Cells[row, 27].Value = $"Missing 'seed' for class '{trueAssetType}'.";
+                                continue;
+                            }
+
+                            Debug.WriteLine($"  -> {sheet} row {row}: creating asset from template {templateId}");
+
+                            // Fetch the seed asset to use as the template payload
+                            var seedAsset = FetchAsset(seedId);
+                            var seedNode = JsonNode.Parse(seedAsset.GetRawText())!.AsObject();
+
+                            // Patch the necessary fields for creation
+                            seedNode["AssetRegisterName"] = assetRegister;
+                            seedNode["TemplateAssetNumberInternal"] = templateId;
+                            // Clear the seed's AssetNumber so it gets a new one on creation
+                            seedNode["AssetNumber"] = null;
+
+                            string? newAssetNumber = null;
+                            string? newAssetRegister = assetRegister;
+
+                            if (!dryrun)
+                            {
+                                var result = SaveAsset(seedNode.ToJsonString(), "ep_asset_create");
+                                newAssetNumber = result.TryGetProperty("AssetNumber", out var anProp) ? anProp.GetString() : null;
+                                if (string.IsNullOrEmpty(newAssetNumber))
+                                {
+                                    ws.Cells[row, 27].Value = "Create returned no AssetNumber.";
+                                    continue;
+                                }
+                                newAssetRegister = result.TryGetProperty("AssetRegisterName", out var arNameProp) ? arNameProp.GetString() : assetRegister;
+                                if (assetNumCol.HasValue) ws.Cells[row, assetNumCol.Value].Value = newAssetNumber;
+                                if (assetRegCol.HasValue && !string.IsNullOrEmpty(newAssetRegister))
+                                {
+                                    ws.Cells[row, assetRegCol.Value].Value = newAssetRegister;
+                                }
+                            }
+                            else
+                            {
+                                newAssetNumber = $"DRYRUN_NEW_ROW_{row}";
+                            }
+
+                            // Use the seed string replacement for further local updates
+                            var seedStr = seedAsset.GetRawText().Replace(seedId, newAssetNumber);
+                            node = JsonNode.Parse(seedStr)!.AsObject();
+
+                            node["AssetNumber"] = newAssetNumber;
+                            if (!string.IsNullOrEmpty(newAssetRegister)) node["AssetRegisterName"] = newAssetRegister;
+                        }
+
+                        for (int colIdx = 0; colIdx < headers.Count; colIdx++)
+                        {
+                            var (kind, code, level, suffix, header) = headers[colIdx];
+                            var cell = ws.Cells[row, colIdx + 1];
+                            var cellValue = cell.Value;
+
+                            // Only the top-level ASSET_TYPE column (where row-6 header == "ASSET_TYPE")
+                            // gets forced to trueAssetType. Captioned attributes have code == "ASSET_TYPE"
+                            // but their headers are captions ("Near Power Line", "Height(m)", ...).
+                            bool isAssetType = string.Equals(header, "asset_type", StringComparison.OrdinalIgnoreCase) ||
+                                               string.Equals(header, "AssetType", StringComparison.OrdinalIgnoreCase);
+
+                            if (isAssetType)
+                            {
+                                var cellValueStr = cellValue?.ToString() ?? "";
+                                if (!string.Equals(cellValueStr, trueAssetType, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    cell.Interior.ColorIndex = 6; // Yellow
+                                }
+                                cellValue = trueAssetType;
+                            }
+
+                            if (cellValue == null || (cellValue is string s && string.IsNullOrEmpty(s))) continue;
+
+                            if (kind == "Attribute")
+                            {
+                                if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(suffix) && level.StartsWith("level_"))
+                                {
+                                    SetAttributeValue(node, code, level, suffix, cellValue);
+                                }
+                            }
+                            else if (!string.IsNullOrEmpty(header))
+                            {
+                                if (header.Equals("AssetRegisterName", StringComparison.OrdinalIgnoreCase)) continue;
+                                node[header] = JsonSerializer.SerializeToNode(cellValue);
                             }
                         }
-                        else if (!string.IsNullOrEmpty(header))
+
+                        if (!string.IsNullOrEmpty(assetRegister))
                         {
-                            node[header] = JsonSerializer.SerializeToNode(cellValue);
+                            node["AssetRegisterName"] = assetRegister;
+                        }
+
+                        if (dryrun)
+                        {
+                            var dumpPath = @"c:\temp\payload.txt";
+                            Directory.CreateDirectory(@"c:\temp");
+                            File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                            ws.Cells[row, 27].Value = $"Dry run: Payload saved to {Path.GetFileName(dumpPath)}";
+                        }
+                        else
+                        {
+                            SaveAsset(node.ToJsonString());
+                            ws.Cells[row, 27].Value = "";
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        ws.Cells[row, 27].Value = ex.Message;
+                    }
+                }
 
+<<<<<<< HEAD:T1Client.cs
                     if (dryRun)
                     {
                         var dir = Path.GetDirectoryName(xlsxPath) ?? ".";
@@ -793,45 +1027,110 @@ namespace T1Sync
                 {
                     ws.Cell(row, "AA").Value = ex.Message;
                 }
+=======
+                wb.Save(); 
+                Debug.WriteLine($"Updated spreadsheet at {excelFilePath}");
+>>>>>>> working1:T1Client_Interop.cs
             }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error: {ex.Message}");
+            }
+            finally
+            {
+                if (wb != null)
+                {
+                    try { wb.Close(); } catch { }
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
 
+<<<<<<< HEAD:T1Client.cs
             wb.Save();
             Debug.WriteLine($"Synced spreadsheet at {xlsxPath}" + (dryRun ? " (dry-run, no POSTs sent)" : ""));
             return xlsxPath;
+=======
+                xlApp.Quit();
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(xlApp);
+            }
+>>>>>>> working1:T1Client_Interop.cs
         }
 
-        public string ExtractAsset(string file, string sheet, int firstRow, int lastRow)
+        public string ExtractAsset(string file, string sheet, int firstRow, int lastRow, string? databaseInstance = null)
         {
-            var xlsxPath = file;
-            using var wb = new XLWorkbook(xlsxPath);
-
-            var sheetName = SanitizeSheetName(sheet);
-            if (!wb.Worksheets.Contains(sheetName))
+            var maxCol = 50;
+            Application xlApp = new Application();
+            xlApp.DisplayAlerts = false;
+            Microsoft.Office.Interop.Excel.Workbook? wb = null;
+            SqlConnection? dbConn = null;
+            string? dbTable = null;
+            try
             {
-                Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
-                return xlsxPath;
-            }
+                wb = xlApp.Workbooks.Open(file, 0, false);
+                var sheetName = SanitizeSheetName(sheet);
 
-            {
-                var ws = wb.Worksheet(sheetName);
-                var lastUsed = ws.LastColumnUsed();
-                var maxCol = lastUsed?.ColumnNumber() ?? 0;
+                Microsoft.Office.Interop.Excel.Worksheet ws;
+                try
+                {
+                    ws = wb.Worksheets[sheetName];
+                }
+                catch
+                {
+                    Debug.WriteLine($"  -> Sheet {sheetName} not found in workbook.");
+                    return file;
+                }
 
                 var headers = new List<(string, string, string, string, string)>();
                 for (int col = 1; col <= maxCol; col++)
                 {
                     headers.Add((
-                        ws.Cell(2, col).GetString() ?? "",
-                        ws.Cell(3, col).GetString() ?? "",
-                        ws.Cell(4, col).GetString() ?? "",
-                        ws.Cell(5, col).GetString() ?? "",
-                        ws.Cell(6, col).GetString() ?? ""
+                        Convert.ToString(ws.Cells[2, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[3, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[4, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[5, col].Value) ?? "",
+                        Convert.ToString(ws.Cells[6, col].Value) ?? ""
                     ));
+                }
+
+                int? assetNumCol = null;
+                for (int i = 0; i < headers.Count; i++)
+                {
+                    if (headers[i].Item5.Equals("AssetNumber", StringComparison.OrdinalIgnoreCase))
+                    {
+                        assetNumCol = i + 1;
+                        break;
+                    }
+                }
+
+                if (!assetNumCol.HasValue)
+                {
+                    Debug.WriteLine($"  -> No 'AssetNumber' header found in sheet {sheetName}.");
+                    return file;
+                }
+
+                // Optional: open a SQL connection if a valid databaseInstance is configured.
+                if (!string.IsNullOrEmpty(databaseInstance))
+                {
+                    using var stream = File.OpenRead(ConfigPath);
+                    using var doc = JsonDocument.Parse(stream);
+                    if (doc.RootElement.TryGetProperty("database", out var dbRoot) &&
+                        dbRoot.TryGetProperty(databaseInstance, out var dbInst) &&
+                        dbInst.TryGetProperty("connection_string", out var connStrProp) &&
+                        dbInst.TryGetProperty("table", out var tableProp))
+                    {
+                        dbTable = tableProp.GetString();
+                        dbConn = new SqlConnection(connStrProp.GetString());
+                        dbConn.Open();
+                        Debug.WriteLine($"  -> DB '{databaseInstance}' connected; geometry → {dbTable}");
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"  -> DB instance '{databaseInstance}' not found / incomplete in config.database.");
+                    }
                 }
 
                 for (int row = firstRow; row <= lastRow; row++)
                 {
-                    var assetNumber = ws.Cell(row, 2).GetString();
+                    var assetNumber = Convert.ToString(ws.Cells[row, assetNumCol.Value].Value);
                     if (string.IsNullOrEmpty(assetNumber)) continue;
 
                     try
@@ -842,24 +1141,98 @@ namespace T1Sync
                         for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                         {
                             var (attrCode, level, suffix, _, header) = headers[colIdx];
+                            if (header.Equals("AssetNumber", StringComparison.OrdinalIgnoreCase)) continue;
+
                             var val = ExtractValue(asset, attrCode, level, suffix, header);
                             if (val != null)
                             {
-                                SetCellValue(ws.Cell(row, colIdx + 1), val);
+                                ws.Cells[row, colIdx + 1].Value = val;
                             }
                         }
-                        ws.Cell(row, "AA").Value = "";
+
+                        string? dbError = null;
+                        if (dbConn != null && !string.IsNullOrEmpty(dbTable))
+                        {
+                            try
+                            {
+                                ExtractGeometryToDb(asset, assetNumber, dbConn, dbTable);
+                            }
+                            catch (Exception dbEx)
+                            {
+                                dbError = "DB: " + dbEx.Message;
+                            }
+                        }
+
+                        ws.Cells[row, 27].Value = dbError ?? "";
                     }
                     catch (Exception ex)
                     {
-                        ws.Cell(row, "AA").Value = ex.Message;
+                        ws.Cells[row, 27].Value = ex.Message;
                     }
                 }
-            }
 
-            wb.Save();
-            Debug.WriteLine($"Updated spreadsheet at {xlsxPath}");
-            return xlsxPath;
+                wb.Save();
+                Debug.WriteLine($"Updated spreadsheet at {file}");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error: {ex.Message}");
+            }
+            finally
+            {
+                dbConn?.Dispose();
+
+                if (wb != null)
+                {
+                    try { wb.Close(); } catch { }
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
+
+                xlApp.Quit();
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(xlApp);
+            }
+            return file;
+        }
+
+        private static void ExtractGeometryToDb(JsonElement asset, string assetNumber, SqlConnection conn, string table)
+        {
+            // Navigate to AssetMap.MapLayers[0]; bail unless it's a POINT.
+            if (!asset.TryGetProperty("AssetMap", out var assetMap)) return;
+            if (!assetMap.TryGetProperty("MapLayers", out var mapLayers)) return;
+            if (mapLayers.ValueKind != JsonValueKind.Array || mapLayers.GetArrayLength() == 0) return;
+
+            var firstLayer = mapLayers[0];
+            if (!firstLayer.TryGetProperty("GeometryType", out var gt)) return;
+            if (!string.Equals(gt.GetString(), "POINT", StringComparison.OrdinalIgnoreCase)) return;
+
+            if (!firstLayer.TryGetProperty("Points", out var points) || points.ValueKind != JsonValueKind.Array) return;
+
+            var coords = new List<(double Lat, double Lon)>();
+            foreach (var pt in points.EnumerateArray())
+            {
+                if (!pt.TryGetProperty("PointLocation", out var loc)) continue;
+                if (!loc.TryGetProperty("Latitude", out var latP) || !latP.TryGetDouble(out var lat)) continue;
+                if (!loc.TryGetProperty("Longitude", out var lonP) || !lonP.TryGetDouble(out var lon)) continue;
+                coords.Add((lat, lon));
+            }
+            if (coords.Count == 0) return;
+
+            // WKT uses (longitude latitude) order.
+            string wkt = coords.Count == 1
+                ? $"POINT ({coords[0].Lon} {coords[0].Lat})"
+                : "MULTIPOINT (" + string.Join(", ", coords.Select(c => $"({c.Lon} {c.Lat})")) + ")";
+
+            using (var del = new SqlCommand($"DELETE FROM {table} WHERE compkey = @compkey", conn))
+            {
+                del.Parameters.AddWithValue("@compkey", assetNumber);
+                del.ExecuteNonQuery();
+            }
+            using (var ins = new SqlCommand($"INSERT INTO {table} (compkey, wkt) VALUES (@compkey, @wkt)", conn))
+            {
+                ins.Parameters.AddWithValue("@compkey", assetNumber);
+                ins.Parameters.AddWithValue("@wkt", wkt);
+                ins.ExecuteNonQuery();
+            }
         }
 
     }
