@@ -1111,7 +1111,9 @@ namespace T1Sync
                 del.Parameters.AddWithValue("@compkey", assetNumber);
                 del.ExecuteNonQuery();
             }
-            using (var ins = new SqlCommand($"INSERT INTO {table} (compkey, wkt) VALUES (@compkey, @wkt)", conn))
+            using (var ins = new SqlCommand(
+                $"INSERT INTO {table} (compkey, wkt, sp_geometry) " +
+                "VALUES (@compkey, @wkt, geometry::STGeomFromText(@wkt, 4326))", conn))
             {
                 ins.Parameters.AddWithValue("@compkey", assetNumber);
                 ins.Parameters.AddWithValue("@wkt", wkt);

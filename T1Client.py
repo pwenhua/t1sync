@@ -346,7 +346,10 @@ class T1Client:
 
         cur = conn.cursor()
         cur.execute(f"DELETE FROM {table} WHERE compkey = ?", asset_number)
-        cur.execute(f"INSERT INTO {table} (compkey, wkt) VALUES (?, ?)", asset_number, wkt)
+        cur.execute(
+            f"INSERT INTO {table} (compkey, wkt, sp_geometry) "
+            "VALUES (?, ?, geometry::STGeomFromText(?, 4326))",
+            asset_number, wkt, wkt)
         conn.commit()
 
     @staticmethod
