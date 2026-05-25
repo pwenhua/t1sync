@@ -257,6 +257,163 @@ namespace T1Sync
         //
         // Header layout is the same 6-row scheme T1Client uses, so the output
         // is consumable by extract_asset / sync_asset_from_excel unchanged.
+        // ---------- Step 6: CSV → ultra-compact flat Excel (nominated fields only) ----------
+        //
+        // Even simpler than TemplateSimple1: the output has ONLY the nominated
+        // direct-field columns — no CSV-template padding, no T1Sync 6-row
+        // header. Just one header row + one data row per ASSET.
+        //
+        //   Row 1   — nominated field names (e.g. AssetRegisterName, AssetNumber, …)
+        //   Row 2+  — one row per ASSET LineType in the source CSV.
+        public string TemplateSimple2(string xlsxPath, string sheet)
+        {
+            var rows = ReadCsv(_csvPath);
+            if (rows.Count < 2) return xlsxPath;
+
+            var headerLine = rows[1];
+            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < headerLine.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(headerLine[i]) && !headerIndex.ContainsKey(headerLine[i]))
+                    headerIndex[headerLine[i]] = i;
+            }
+
+            int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
+
+            var assets = new List<List<string>>();
+            if (lineTypeIdx >= 0)
+            {
+                foreach (var row in rows.Skip(2))
+                {
+                    if (lineTypeIdx < row.Count &&
+                        row[lineTypeIdx].Equals("ASSET", StringComparison.OrdinalIgnoreCase))
+                    {
+                        assets.Add(row);
+                    }
+                }
+            }
+
+            var dir = Path.GetDirectoryName(xlsxPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
+            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
+
+            var sheetName = UniqueSheetName(wb, sheet);
+            var ws = wb.Worksheets.Add(sheetName);
+
+            // Row 1: just the nominated field names. Columns formatted as text
+            // by default so values like "0100038" keep their leading zeros.
+            for (int i = 0; i < _nominatedFields.Count; i++)
+            {
+                ws.Cell(1, i + 1).Value = _nominatedFields[i];
+                ws.Column(i + 1).Style.NumberFormat.Format = "@";
+            }
+
+            // Row 2+: one row per ASSET.
+            for (int r = 0; r < assets.Count; r++)
+            {
+                var asset = assets[r];
+                int rowNum = 2 + r;
+                for (int i = 0; i < _nominatedFields.Count; i++)
+                {
+                    var f = _nominatedFields[i];
+                    if (headerIndex.TryGetValue(f, out var idx) &&
+                        idx < asset.Count && !string.IsNullOrEmpty(asset[idx]))
+                    {
+                        ws.Cell(rowNum, i + 1).Value = asset[idx];
+                    }
+                }
+            }
+
+            wb.SaveAs(xlsxPath);
+            return xlsxPath;
+        }
+
+        // ---------- Step 5: CSV → simple Excel that mirrors the CSV template ----------
+        //
+        // Output layout:
+        //   Row 1     — verbatim copy of CSV line 1 (the FORMAT line).
+        //   Row 2     — verbatim copy of CSV line 2 (the full column header,
+        //               every CSV column included so the template shape is
+        //               preserved for round-trip with T1's CSV importer).
+        //   Row 3+    — one row per ASSET LineType in the source CSV.
+        //               Only the nominated direct-field columns are populated;
+        //               every other column is left blank. ATTRIBUTE rows are
+        //               dropped entirely.
+        public string TemplateSimple1(string xlsxPath, string sheet)
+        {
+            var rows = ReadCsv(_csvPath);
+            if (rows.Count < 2) return xlsxPath;
+
+            var formatLine = rows[0];   // CSV row 1
+            var headerLine = rows[1];   // CSV row 2 — full column header
+
+            // Map header name → column index (CSV column position).
+            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < headerLine.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(headerLine[i]) && !headerIndex.ContainsKey(headerLine[i]))
+                    headerIndex[headerLine[i]] = i;
+            }
+
+            int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
+
+            // Indices of columns to populate in data rows: LineType + nominated.
+            var keepIndices = new HashSet<int>();
+            if (lineTypeIdx >= 0) keepIndices.Add(lineTypeIdx);
+            foreach (var f in _nominatedFields)
+                if (headerIndex.TryGetValue(f, out var idx)) keepIndices.Add(idx);
+
+            // Filter to ASSET rows only.
+            var assets = new List<List<string>>();
+            if (lineTypeIdx >= 0)
+            {
+                foreach (var row in rows.Skip(2))
+                {
+                    if (lineTypeIdx < row.Count &&
+                        row[lineTypeIdx].Equals("ASSET", StringComparison.OrdinalIgnoreCase))
+                    {
+                        assets.Add(row);
+                    }
+                }
+            }
+
+            var dir = Path.GetDirectoryName(xlsxPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
+            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
+
+            var sheetName = UniqueSheetName(wb, sheet);
+            var ws = wb.Worksheets.Add(sheetName);
+
+            // Row 1 — verbatim FORMAT line.
+            for (int c = 0; c < formatLine.Count; c++)
+                if (!string.IsNullOrEmpty(formatLine[c]))
+                    ws.Cell(1, c + 1).Value = formatLine[c];
+
+            // Row 2 — verbatim full CSV column header.
+            for (int c = 0; c < headerLine.Count; c++)
+                if (!string.IsNullOrEmpty(headerLine[c]))
+                    ws.Cell(2, c + 1).Value = headerLine[c];
+
+            // Row 3+ — ASSET data, only nominated columns populated.
+            for (int r = 0; r < assets.Count; r++)
+            {
+                var asset = assets[r];
+                int rowNum = 3 + r;
+                foreach (int c in keepIndices)
+                {
+                    if (c < asset.Count && !string.IsNullOrEmpty(asset[c]))
+                        ws.Cell(rowNum, c + 1).Value = asset[c];
+                }
+            }
+
+            wb.SaveAs(xlsxPath);
+            return xlsxPath;
+        }
+
         public string Template2FlatBrief(string xlsxPath, string sheet)
         {
             var (assets, attrCodesOrdered) = ReadCsvBrief();

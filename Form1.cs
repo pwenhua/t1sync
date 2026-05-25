@@ -2,9 +2,8 @@ using System.Diagnostics;
 
 namespace T1Sync
 {
-    // Test harness for T1Sync. Each demo method is self-contained — its inputs
-    // live as local consts inside the method so you can read/edit one demo
-    // without scrolling. The two button handlers just toggle which demo runs.
+    // Test harness for T1Sync. Demos that share variables are grouped into one
+    // method; comment out lines inside a demo to skip individual operations.
     //   button1 ("T1WS")           → T1Client operations
     //   button2 ("CsvTransformer") → CsvTransformer operations
     public partial class Form1 : Form
@@ -14,87 +13,60 @@ namespace T1Sync
         // ===== button1 — T1Client demos. Uncomment ONE per click. =====
         private void button1_Click(object sender, EventArgs e)
         {
-            //FetchAssetDemo();
-            //SaveAssetRoundTripDemo();
-            //ParseAssetsMetaDemo();
-            //SaveMetaToExcelDemo();
-            //SyncAssetFromExcelDemo(dryrun: true);
-            ExtractAssetDemo(databaseInstance: "mcc");
+            //T1HttpDemo();
+            T1ExcelDemo();
         }
 
-        // ===== button2 — CsvTransformer demos. Uncomment ONE per click. =====
+        // ===== button2 — CsvTransformer demos. =====
         private void button2_Click(object sender, EventArgs e)
         {
             //CsvToMetaDemo();
-            CsvToFlatBriefDemo();
+            CsvDemo();
         }
 
         // ---------------- T1Client demos ----------------
 
-        private static void FetchAssetDemo()
+        // HTTP-only operations against T1 — no Excel touched.
+        // All three share `service`; the first two also share `testAssetId`.
+        // SaveAsset is a real write (round-trip — fetched payload posted back).
+        // ParseAssetsMeta walks every entry in svc_config.asset_classes and writes <service>.json.
+        private static void T1HttpDemo()
         {
             const string service     = "workshop-TP";
             const string testAssetId = "0100017";
 
             var client = new T1Client_Interop(service);
+
             var asset = client.FetchAsset(testAssetId);
             Debug.WriteLine($"FetchAsset {testAssetId}: top-level keys = " +
                             string.Join(", ", asset.EnumerateObject().Select(p => p.Name)));
             if (asset.TryGetProperty("AssetAttributes", out var attrs))
                 Debug.WriteLine($"  AssetAttributes count = {attrs.GetArrayLength()}");
-        }
 
-        private static void SaveAssetRoundTripDemo()
-        {
-            const string service     = "workshop-TP";
-            const string testAssetId = "0100017";
-
-            var client = new T1Client_Interop(service);
-            var asset = client.FetchAsset(testAssetId);
             var resp = client.SaveAsset(asset);
             Debug.WriteLine($"SaveAsset round-trip OK (response kind = {resp.ValueKind}).");
-        }
 
-        private static void ParseAssetsMetaDemo()
-        {
-            const string service = "workshop-TP";
-
-            var client = new T1Client_Interop(service);
             var lookup = client.ParseAssetsMeta();   // writes <service>.json next to config.json
             Debug.WriteLine($"ParseAssetsMeta: {lookup.Count} asset types.");
         }
 
-        private static void SaveMetaToExcelDemo()
+        // Spreadsheet-aware operations. All share service + xlsxFile (+ sheet/rows for sync/extract).
+        // Factory auto-routes to T1Client_ClosedXML (local path) or T1Client_Interop (http URL).
+        // The three ops are mutually impacting on the same file — comment out the ones you
+        // don't want before clicking, especially SaveMetaToExcel (it rewrites the headers).
+        private static void T1ExcelDemo()
         {
             const string service  = "workshop-TP";
             const string xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
-            // For online use:
+            // Online alternative:
             //const string xlsxFile = @"https://maroondahcc.sharepoint.com/sites/AssetsWorkspace/Shared%20Documents/Asset%20Management/AssetRegister/AssetRegisterTest.xlsx?web=1";
-
-            // Factory auto-routes to T1Client_ClosedXML (local) or T1Client_Interop (URL).
-            T1ClientFactory.SaveMetaToExcel(service, xlsxFile);
-        }
-
-        private static void SyncAssetFromExcelDemo(bool dryrun)
-        {
-            const string service  = "workshop-TP";
-            const string xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
             const string sheet    = "Tree_Street Tree";
             const int    firstRow = 7;
             const int    lastRow  = 7;
 
-            T1ClientFactory.SyncAssetFromExcel(service, xlsxFile, sheet, firstRow, lastRow, dryrun);
-        }
-
-        private static void ExtractAssetDemo(string? databaseInstance = null)
-        {
-            const string service  = "workshop-TP";
-            const string xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
-            const string sheet    = "Tree_Street Tree";
-            const int    firstRow = 7;
-            const int    lastRow  = 7;
-
-            T1ClientFactory.ExtractAsset(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance);
+            //T1ClientFactory.SaveMetaToExcel(service, xlsxFile);
+            //T1ClientFactory.SyncAssetFromExcel(service, xlsxFile, sheet, firstRow, lastRow, dryrun: true);
+            T1ClientFactory.ExtractAsset(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance: "mcc");
         }
 
         // ---------------- CsvTransformer demos ----------------
@@ -113,21 +85,26 @@ namespace T1Sync
             Debug.WriteLine($"CSV → meta: {metaJson}  +  {metaXlsx}");
         }
 
-        private static void CsvToFlatBriefDemo()
+        // Runs all three CSV → Excel transforms in one click. They all write
+        // into the SAME workbook, each as a separate sheet (UniqueSheetName
+        // auto-appends "01", "02" when a sheet with that base name exists).
+        //   Sheet 1 ("Tree_Street Tree")   ← Template2FlatBrief (6-row header)
+        //   Sheet 2 ("Tree_Street Tree01") ← TemplateSimple1    (2-row CSV-shape)
+        //   Sheet 3 ("Tree_Street Tree02") ← TemplateSimple2    (1-row compact)
+        private static void CsvDemo()
         {
             const string csvSource = "ASSET_Export_25052026-011611.csv";
+            const string outXlsx   = @"c:\temp\csv-demo.xlsx";
             const string sheet     = "Tree/Street Tree";
-            const string flatXlsx  = @"c:\temp\csv-flat.xlsx";
 
-            // CSV (template, multi-row per asset) → flat brief Excel.
-            // Nominated direct fields come from the shared top-level
-            // "nominated_fields" array in config.json. Captioned attribute
-            // sub-fields are not extracted (brief output).
-            if (File.Exists(flatXlsx)) File.Delete(flatXlsx);
+            if (File.Exists(outXlsx)) File.Delete(outXlsx);
 
             var t = CsvTransformer.FromConfig(csvSource);
-            t.Template2FlatBrief(flatXlsx, sheet);
-            Debug.WriteLine($"CSV → flat brief: {flatXlsx}");
+            t.Template2FlatBrief(outXlsx, sheet);
+            t.TemplateSimple1(outXlsx, sheet);
+            t.TemplateSimple2(outXlsx, sheet);
+
+            Debug.WriteLine($"CSV → {outXlsx} (3 sheets)");
         }
     }
 }
