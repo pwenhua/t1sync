@@ -272,51 +272,78 @@ namespace T1Sync
         {
             var (assets, attrCodesOrdered) = ReadCsvBrief();
 
-            // Build column tuples (Kind, Code, Level, Suffix, DataType, Header).
-            //   • Nominated direct fields → kind="", header=field name
-            //   • Each unique AttributeCode → kind="Attribute", header=code
-            //   • dataType defaults to "A" so values aren't munged (e.g.
-            //     leading-zero AssetNumbers stay as strings).
-            var columns = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
-            foreach (var f in _nominatedFields)
-                columns.Add(("", "", "", "", "A", f));
-            foreach (var code in attrCodesOrdered)
-                columns.Add(("Attribute", "", "", "", "A", code));
-
             var dir = Path.GetDirectoryName(xlsxPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
             using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
             if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
 
-            var sheetName = UniqueSheetName(wb, sheet);
-            var ws = wb.Worksheets.Add(sheetName);
+            var sheetName = MetaSchema.SanitizeSheetName(sheet);
+            IXLWorksheet ws;
+            List<(string Kind, string Level, string Header)> layout;
 
-            // 6-row header
-            for (int i = 0; i < columns.Count; i++)
+            if (wb.Worksheets.Contains(sheetName))
             {
-                var c = columns[i];
-                ws.Cell(1, i + 1).Value = c.Kind;
-                ws.Cell(2, i + 1).Value = c.Code;
-                ws.Cell(3, i + 1).Value = c.Level;
-                ws.Cell(4, i + 1).Value = c.Suffix;
-                ws.Cell(5, i + 1).Value = c.DataType;
-                ws.Cell(6, i + 1).Value = c.Header;
-                ws.Column(i + 1).Style.NumberFormat.Format = MetaSchema.NumberFormatFor(c.DataType);
+                // Sheet already exists (e.g. previously initialized by SaveMetaToExcel).
+                // Reuse its 6-row header as the column layout — captioned-attribute
+                // columns get left blank below ("brief" = ignore internal levels).
+                ws = wb.Worksheet(sheetName);
+                var lastCol = ws.LastColumnUsed();
+                int maxCol = lastCol?.ColumnNumber() ?? 0;
+                layout = new List<(string, string, string)>(maxCol);
+                for (int i = 1; i <= maxCol; i++)
+                {
+                    layout.Add((
+                        ws.Cell(1, i).GetString() ?? "",   // kind
+                        ws.Cell(3, i).GetString() ?? "",   // level
+                        ws.Cell(6, i).GetString() ?? ""    // header / caption
+                    ));
+                }
+            }
+            else
+            {
+                // No existing sheet — create one with the brief layout
+                // (nominated direct fields + one column per AttributeCode).
+                ws = wb.Worksheets.Add(sheetName);
+                var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
+                foreach (var f in _nominatedFields)
+                    briefCols.Add(("", "", "", "", "A", f));
+                foreach (var code in attrCodesOrdered)
+                    briefCols.Add(("Attribute", "", "", "", "A", code));
+
+                for (int i = 0; i < briefCols.Count; i++)
+                {
+                    var c = briefCols[i];
+                    ws.Cell(1, i + 1).Value = c.Kind;
+                    ws.Cell(2, i + 1).Value = c.Code;
+                    ws.Cell(3, i + 1).Value = c.Level;
+                    ws.Cell(4, i + 1).Value = c.Suffix;
+                    ws.Cell(5, i + 1).Value = c.DataType;
+                    ws.Cell(6, i + 1).Value = c.Header;
+                    ws.Column(i + 1).Style.NumberFormat.Format = MetaSchema.NumberFormatFor(c.DataType);
+                }
+                layout = briefCols.Select(c => (c.Kind, c.Level, c.Header)).ToList();
             }
 
             // Data rows start at row 7 — one per asset.
+            //   kind=""        + header → direct field         → fill from asset.Fields
+            //   kind="Attribute" + level=""  → AttributeCode scalar → fill from asset.Attributes
+            //   kind="Attribute" + level="level_N"             → captioned, leave blank
             for (int r = 0; r < assets.Count; r++)
             {
                 var asset = assets[r];
-                var row = 7 + r;
-                for (int i = 0; i < columns.Count; i++)
+                int rowNum = 7 + r;
+                for (int i = 0; i < layout.Count; i++)
                 {
-                    var c = columns[i];
+                    var (kind, level, header) = layout[i];
                     string? val = null;
-                    if (c.Kind == "Attribute") asset.Attributes.TryGetValue(c.Header, out val);
-                    else                       asset.Fields.TryGetValue(c.Header, out val);
-                    if (!string.IsNullOrEmpty(val)) ws.Cell(row, i + 1).Value = val;
+                    if (kind == "" && !string.IsNullOrEmpty(header))
+                        asset.Fields.TryGetValue(header, out val);
+                    else if (kind == "Attribute" && string.IsNullOrEmpty(level))
+                        asset.Attributes.TryGetValue(header, out val);
+                    // else: captioned attribute → leave blank ("brief")
+
+                    if (!string.IsNullOrEmpty(val)) ws.Cell(rowNum, i + 1).Value = val;
                 }
             }
 

@@ -116,15 +116,21 @@ namespace T1Sync
 
         private static void CsvToFlatBriefDemo()
         {
-            const string service   = "workshop-TP";
             const string csvSource = "ASSET_Export_25052026-011611.csv";
             const string sheet     = "Tree/Street Tree";
             const string flatXlsx  = @"c:\temp\csv-flat.xlsx";
 
-            // CSV (template, multi-row per asset) → flat brief Excel
-            // (one row per asset; one column per nominated field + one per AttributeCode).
-            // Captioned sub-fields inside each attribute are NOT expanded.
-            var t = CsvTransformer.FromConfig(csvSource, service);
+            // CSV (template, multi-row per asset) → flat brief Excel.
+            // Nominated direct fields are hardcoded here — no service config needed.
+            // Captioned attribute sub-fields are not extracted (brief output).
+            // Template2FlatBrief auto-creates a brief-layout sheet when the target
+            // doesn't exist: one column per nominated field + one per AttributeCode,
+            // one row per asset.
+            if (File.Exists(flatXlsx)) File.Delete(flatXlsx);
+
+            var t = new CsvTransformer(csvSource,
+                "AssetRegisterName", "AssetNumber", "Description",
+                "ShortDescription", "Status", "OperatingStatus");
             t.Template2FlatBrief(flatXlsx, sheet);
             Debug.WriteLine($"CSV → flat brief: {flatXlsx}");
         }
