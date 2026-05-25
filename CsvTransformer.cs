@@ -253,6 +253,143 @@ namespace T1Sync
             return SaveMetaToExcelStatic(xlsxPath, wrapped);
         }
 
+        // ---------- Step 4: CSV (template) → flat brief Excel ----------
+        //
+        // SaveMetaToExcel produces a metadata-only workbook (6 header rows + no
+        // data). Template2FlatBrief produces a data workbook:
+        //   • The CSV is a "template" — one logical asset spans many CSV rows:
+        //       one ASSET line + 0..N following ATTRIBUTE lines.
+        //   • The output is "flat" — one row per asset, one column per
+        //     (nominated direct field) and one column per (AttributeCode).
+        //   • "Brief" — captioned sub-fields inside each attribute (Userfield1,
+        //     SelectionType2, …) are NOT exploded into their own columns.
+        //     The column for each AttributeCode just holds the SearchPath
+        //     (i.e. the "value" of that attribute).
+        //
+        // Header layout is the same 6-row scheme T1Client uses, so the output
+        // is consumable by extract_asset / sync_asset_from_excel unchanged.
+        public string Template2FlatBrief(string xlsxPath, string sheet)
+        {
+            var (assets, attrCodesOrdered) = ReadCsvBrief();
+
+            // Build column tuples (Kind, Code, Level, Suffix, DataType, Header).
+            //   • Nominated direct fields → kind="", header=field name
+            //   • Each unique AttributeCode → kind="Attribute", header=code
+            //   • dataType defaults to "A" so values aren't munged (e.g.
+            //     leading-zero AssetNumbers stay as strings).
+            var columns = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
+            foreach (var f in _nominatedFields)
+                columns.Add(("", "", "", "", "A", f));
+            foreach (var code in attrCodesOrdered)
+                columns.Add(("Attribute", "", "", "", "A", code));
+
+            var dir = Path.GetDirectoryName(xlsxPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
+            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
+
+            var sheetName = UniqueSheetName(wb, sheet);
+            var ws = wb.Worksheets.Add(sheetName);
+
+            // 6-row header
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var c = columns[i];
+                ws.Cell(1, i + 1).Value = c.Kind;
+                ws.Cell(2, i + 1).Value = c.Code;
+                ws.Cell(3, i + 1).Value = c.Level;
+                ws.Cell(4, i + 1).Value = c.Suffix;
+                ws.Cell(5, i + 1).Value = c.DataType;
+                ws.Cell(6, i + 1).Value = c.Header;
+                ws.Column(i + 1).Style.NumberFormat.Format = MetaSchema.NumberFormatFor(c.DataType);
+            }
+
+            // Data rows start at row 7 — one per asset.
+            for (int r = 0; r < assets.Count; r++)
+            {
+                var asset = assets[r];
+                var row = 7 + r;
+                for (int i = 0; i < columns.Count; i++)
+                {
+                    var c = columns[i];
+                    string? val = null;
+                    if (c.Kind == "Attribute") asset.Attributes.TryGetValue(c.Header, out val);
+                    else                       asset.Fields.TryGetValue(c.Header, out val);
+                    if (!string.IsNullOrEmpty(val)) ws.Cell(row, i + 1).Value = val;
+                }
+            }
+
+            wb.SaveAs(xlsxPath);
+            return xlsxPath;
+        }
+
+        // Walks the CSV row-by-row, grouping each ASSET line with its following
+        // ATTRIBUTE lines into one AssetRecord. Returns (assets, ordered list of
+        // distinct AttributeCodes encountered, by first appearance).
+        private (List<AssetRecord> Assets, List<string> AttrCodes) ReadCsvBrief()
+        {
+            var rows = ReadCsv(_csvPath);
+            var assets = new List<AssetRecord>();
+            var attrCodesOrdered = new List<string>();
+            var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (rows.Count < 2) return (assets, attrCodesOrdered);
+
+            var header = rows[1];
+            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < header.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(header[i]) && !headerIndex.ContainsKey(header[i]))
+                    headerIndex[header[i]] = i;
+            }
+
+            int lineTypeIdx   = headerIndex.GetValueOrDefault("LineType",      -1);
+            int attrCodeIdx   = headerIndex.GetValueOrDefault("AttributeCode", -1);
+            int searchPathIdx = headerIndex.GetValueOrDefault("SearchPath",    -1);
+
+            AssetRecord? current = null;
+
+            foreach (var row in rows.Skip(2))
+            {
+                if (lineTypeIdx < 0 || lineTypeIdx >= row.Count) continue;
+                var lineType = row[lineTypeIdx];
+
+                if (lineType.Equals("ASSET", StringComparison.OrdinalIgnoreCase))
+                {
+                    current = new AssetRecord();
+                    foreach (var f in _nominatedFields)
+                    {
+                        if (!headerIndex.TryGetValue(f, out var idx)) continue;
+                        if (idx >= row.Count) continue;
+                        current.Fields[f] = row[idx];
+                    }
+                    assets.Add(current);
+                }
+                else if (lineType.Equals("ATTRIBUTE", StringComparison.OrdinalIgnoreCase) && current != null)
+                {
+                    if (attrCodeIdx < 0 || attrCodeIdx >= row.Count) continue;
+                    var code = row[attrCodeIdx];
+                    if (string.IsNullOrEmpty(code)) continue;
+                    var sp = (searchPathIdx >= 0 && searchPathIdx < row.Count) ? row[searchPathIdx] : "";
+
+                    // Multiple ATTRIBUTE rows per code (one per level) all carry the
+                    // same SearchPath in T1's CSV export, so first-write-wins is fine.
+                    if (!current.Attributes.ContainsKey(code))
+                        current.Attributes[code] = sp;
+
+                    if (seenCodes.Add(code)) attrCodesOrdered.Add(code);
+                }
+            }
+
+            return (assets, attrCodesOrdered);
+        }
+
+        private class AssetRecord
+        {
+            public Dictionary<string, string> Fields     = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> Attributes = new(StringComparer.OrdinalIgnoreCase);
+        }
+
         private static string SaveMetaToExcelStatic(string xlsxPath, Dictionary<string, object> meta)
         {
             var dir = Path.GetDirectoryName(xlsxPath);
