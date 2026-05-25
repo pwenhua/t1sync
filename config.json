@@ -42,7 +42,8 @@
         "Description",
         "ShortDescription",
         "Status",
-        "OperatingStatus"
+        "OperatingStatus",
+        "WKT"
     ],
 
     "database":

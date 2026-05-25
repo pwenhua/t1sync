@@ -1028,31 +1028,34 @@ namespace T1Sync
 
         private static void ExtractGeometryToDb(JsonElement asset, string assetNumber, SqlConnection conn, string table)
         {
-            // Navigate to AssetMap.MapLayers[0]; bail unless it's a POINT.
-            if (!asset.TryGetProperty("AssetMap", out var assetMap)) return;
-            if (!assetMap.TryGetProperty("MapLayers", out var mapLayers)) return;
-            if (mapLayers.ValueKind != JsonValueKind.Array || mapLayers.GetArrayLength() == 0) return;
-
-            var firstLayer = mapLayers[0];
-            if (!firstLayer.TryGetProperty("GeometryType", out var gt)) return;
-            if (!string.Equals(gt.GetString(), "POINT", StringComparison.OrdinalIgnoreCase)) return;
-
-            if (!firstLayer.TryGetProperty("Points", out var points) || points.ValueKind != JsonValueKind.Array) return;
-
-            var coords = new List<(double Lat, double Lon)>();
-            foreach (var pt in points.EnumerateArray())
+            // Collect ready-made WKT strings directly from
+            //   AssetMap.MapLayers[*].Geometries[*].WKT
+            // (T1 already produces the WKT — no need to rebuild from lat/lon).
+            // Multiple geometries are wrapped in a GEOMETRYCOLLECTION.
+            var wkts = new List<string>();
+            if (asset.TryGetProperty("AssetMap", out var assetMap) &&
+                assetMap.TryGetProperty("MapLayers", out var mapLayers) &&
+                mapLayers.ValueKind == JsonValueKind.Array)
             {
-                if (!pt.TryGetProperty("PointLocation", out var loc)) continue;
-                if (!loc.TryGetProperty("Latitude", out var latP) || !latP.TryGetDouble(out var lat)) continue;
-                if (!loc.TryGetProperty("Longitude", out var lonP) || !lonP.TryGetDouble(out var lon)) continue;
-                coords.Add((lat, lon));
+                foreach (var layer in mapLayers.EnumerateArray())
+                {
+                    if (!layer.TryGetProperty("Geometries", out var geoms) || geoms.ValueKind != JsonValueKind.Array)
+                        continue;
+                    foreach (var g in geoms.EnumerateArray())
+                    {
+                        if (g.TryGetProperty("WKT", out var wktProp) && wktProp.ValueKind == JsonValueKind.String)
+                        {
+                            var w = wktProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(w)) wkts.Add(w);
+                        }
+                    }
+                }
             }
-            if (coords.Count == 0) return;
+            if (wkts.Count == 0) return;
 
-            // WKT uses (longitude latitude) order.
-            string wkt = coords.Count == 1
-                ? $"POINT ({coords[0].Lon} {coords[0].Lat})"
-                : "MULTIPOINT (" + string.Join(", ", coords.Select(c => $"({c.Lon} {c.Lat})")) + ")";
+            string wkt = wkts.Count == 1
+                ? wkts[0]
+                : "GEOMETRYCOLLECTION(" + string.Join(", ", wkts) + ")";
 
             using (var del = new SqlCommand($"DELETE FROM {table} WHERE compkey = @compkey", conn))
             {

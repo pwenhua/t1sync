@@ -374,40 +374,31 @@ class T1Client:
 
     @staticmethod
     def _extract_geometry_to_db(asset: dict, asset_number: str, conn, table: str) -> None:
-        """Extract AssetMap.MapLayers[0] POINT geometry from `asset` and upsert
-        into `table` keyed by `compkey = asset_number`, with WKT in column `wkt`."""
+        """Collect ready-made WKT strings from
+            asset['AssetMap']['MapLayers'][*]['Geometries'][*]['WKT']
+        and upsert into `table` keyed by `compkey = asset_number`. Multiple
+        geometries are wrapped in a GEOMETRYCOLLECTION."""
+        wkts: list[str] = []
         asset_map = asset.get("AssetMap")
-        if not isinstance(asset_map, dict):
-            return
-        layers = asset_map.get("MapLayers")
-        if not isinstance(layers, list) or not layers:
-            return
-        first = layers[0]
-        if str(first.get("GeometryType", "")).upper() != "POINT":
-            return
-        points = first.get("Points")
-        if not isinstance(points, list):
-            return
-
-        coords: list[tuple[float, float]] = []
-        for pt in points:
-            loc = pt.get("PointLocation") if isinstance(pt, dict) else None
-            if not isinstance(loc, dict):
-                continue
-            try:
-                lat = float(loc["Latitude"])
-                lon = float(loc["Longitude"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            coords.append((lat, lon))
-        if not coords:
+        if isinstance(asset_map, dict):
+            layers = asset_map.get("MapLayers")
+            if isinstance(layers, list):
+                for layer in layers:
+                    if not isinstance(layer, dict):
+                        continue
+                    geoms = layer.get("Geometries")
+                    if not isinstance(geoms, list):
+                        continue
+                    for g in geoms:
+                        if not isinstance(g, dict):
+                            continue
+                        w = g.get("WKT")
+                        if isinstance(w, str) and w.strip():
+                            wkts.append(w)
+        if not wkts:
             return
 
-        # WKT uses (longitude latitude) order.
-        if len(coords) == 1:
-            wkt = f"POINT ({coords[0][1]} {coords[0][0]})"
-        else:
-            wkt = "MULTIPOINT (" + ", ".join(f"({lon} {lat})" for lat, lon in coords) + ")"
+        wkt = wkts[0] if len(wkts) == 1 else "GEOMETRYCOLLECTION(" + ", ".join(wkts) + ")"
 
         cur = conn.cursor()
         cur.execute(f"DELETE FROM {table} WHERE compkey = ?", asset_number)
