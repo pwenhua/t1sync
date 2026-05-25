@@ -26,15 +26,6 @@
                 "url": "Api/WS/v2/Asset/CreateFromTemplate"
             },
 
-            "nominated_fields": [
-                "AssetRegisterName",
-                "AssetNumber",
-                "Description",
-                "ShortDescription",
-                "Status",
-                "OperatingStatus"
-            ],
-
             "asset_classes":
             {
                 "Tree/Street Tree": {
@@ -45,7 +36,16 @@
         }
     },
 
-    "database": 
+    "nominated_fields": [
+        "AssetRegisterName",
+        "AssetNumber",
+        "Description",
+        "ShortDescription",
+        "Status",
+        "OperatingStatus"
+    ],
+
+    "database":
     {
         "local":{
             "type": "sqlserver",

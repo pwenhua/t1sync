@@ -565,8 +565,8 @@ namespace T1Sync
             }
 
             // Root field (top-level on the asset payload).
-            var rootFields = new[] { "AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status", "OperatingStatus" };
-            if (Array.IndexOf(rootFields, header) >= 0)
+            // Source list: T1Client_Interop.RootFields (loaded from config.json).
+            if (Array.IndexOf(T1Client_Interop.RootFields, header) >= 0)
             {
                 return asset.TryGetProperty(header, out var v) ? JsonElementToValueLocal(v) : null;
             }

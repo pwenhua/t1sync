@@ -5,8 +5,33 @@ import re
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 META_KEY = re.compile(r"^(AttributeItem(?:Userfield|SelectionType)\d+)_META_$")
-ROOT_FIELDS = ["AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status","OperatingStatus"]
 INVALID_SHEET_CHARS = set(":\\/?*[]")
+
+
+def _load_nominated_fields() -> list[str]:
+    """Read the top-level 'nominated_fields' array from config.json. Falls back
+    to the original hardcoded list if config.json is missing/malformed."""
+    defaults = [
+        "AssetRegisterName", "AssetNumber", "Description",
+        "ShortDescription", "Status", "OperatingStatus",
+    ]
+    try:
+        if not CONFIG_PATH.exists():
+            return defaults
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        nf = cfg.get("nominated_fields")
+        if isinstance(nf, list):
+            result = [s for s in nf if isinstance(s, str) and s]
+            if result:
+                return result
+    except Exception:
+        pass
+    return defaults
+
+
+# Shared with all parts of T1Client (parse_assetitem_meta, _extract_value, ...)
+ROOT_FIELDS = _load_nominated_fields()
 
 class T1Client:
     def __init__(self, service: str, config_path: Path = CONFIG_PATH):

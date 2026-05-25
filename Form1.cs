@@ -101,14 +101,13 @@ namespace T1Sync
 
         private static void CsvToMetaDemo()
         {
-            const string service   = "workshop-TP";
             const string csvSource = "ASSET_Export_25052026-011611.csv";
             const string nodeName  = "Tree/Street Tree";
             const string metaJson  = @"c:\temp\csv-meta.json";
             const string metaXlsx  = @"c:\temp\csv-meta.xlsx";
 
-            // nominated_fields comes from config.json (t1ws.<service>.nominated_fields)
-            var t = CsvTransformer.FromConfig(csvSource, service);
+            // nominated_fields comes from the top-level "nominated_fields" array in config.json.
+            var t = CsvTransformer.FromConfig(csvSource);
             t.SaveMetaToJson(metaJson, nodeName);
             t.SaveMetaToExcel(metaXlsx, nodeName);
             Debug.WriteLine($"CSV → meta: {metaJson}  +  {metaXlsx}");
@@ -121,16 +120,12 @@ namespace T1Sync
             const string flatXlsx  = @"c:\temp\csv-flat.xlsx";
 
             // CSV (template, multi-row per asset) → flat brief Excel.
-            // Nominated direct fields are hardcoded here — no service config needed.
-            // Captioned attribute sub-fields are not extracted (brief output).
-            // Template2FlatBrief auto-creates a brief-layout sheet when the target
-            // doesn't exist: one column per nominated field + one per AttributeCode,
-            // one row per asset.
+            // Nominated direct fields come from the shared top-level
+            // "nominated_fields" array in config.json. Captioned attribute
+            // sub-fields are not extracted (brief output).
             if (File.Exists(flatXlsx)) File.Delete(flatXlsx);
 
-            var t = new CsvTransformer(csvSource,
-                "AssetRegisterName", "AssetNumber", "Description",
-                "ShortDescription", "Status", "OperatingStatus");
+            var t = CsvTransformer.FromConfig(csvSource);
             t.Template2FlatBrief(flatXlsx, sheet);
             Debug.WriteLine($"CSV → flat brief: {flatXlsx}");
         }

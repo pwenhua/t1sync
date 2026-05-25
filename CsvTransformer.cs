@@ -61,37 +61,26 @@ namespace T1Sync
         }
 
         /// <summary>
-        /// Build a CsvTransformer with `nominated_fields` loaded from
-        /// config.json (under t1ws.&lt;service&gt;.nominated_fields).
+        /// Build a CsvTransformer with `nominated_fields` loaded from the
+        /// top-level `nominated_fields` array in config.json. Shared across
+        /// services — no service parameter required.
         /// </summary>
         public static CsvTransformer FromConfig(
             string csvPath,
-            string service,
             string configPath = T1Client_Interop.DefaultConfigPath)
         {
-            var fields = LoadNominatedFromConfig(service, configPath);
+            var fields = LoadNominatedFromConfig(configPath);
             return new CsvTransformer(csvPath, fields.ToArray());
         }
 
-        private static List<string> LoadNominatedFromConfig(string service, string configPath)
+        private static List<string> LoadNominatedFromConfig(string configPath)
         {
             var fields = new List<string>();
             using var stream = File.OpenRead(configPath);
             using var doc = JsonDocument.Parse(stream);
             var root = doc.RootElement;
 
-            // Prefer t1ws.<service>.nominated_fields; fall back to top-level <service>.nominated_fields
-            JsonElement svc;
-            if (root.TryGetProperty("t1ws", out var t1ws) && t1ws.TryGetProperty(service, out svc))
-            {
-                // ok
-            }
-            else if (!root.TryGetProperty(service, out svc))
-            {
-                return fields;
-            }
-
-            if (svc.TryGetProperty("nominated_fields", out var nf) && nf.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("nominated_fields", out var nf) && nf.ValueKind == JsonValueKind.Array)
             {
                 foreach (var f in nf.EnumerateArray())
                 {

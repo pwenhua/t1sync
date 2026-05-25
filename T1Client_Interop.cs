@@ -42,10 +42,42 @@ namespace T1Sync
             @"^(AttributeItem(?:Userfield|SelectionType)\d+)_META_$",
             RegexOptions.Compiled);
 
-        private static readonly string[] RootFields =
+        // Shared with T1Client_ClosedXML / CsvTransformer — loaded once from
+        // config.json's top-level "nominated_fields" array at type-init time.
+        // Falls back to the original hardcoded list if config.json is unreadable
+        // or doesn't contain the array.
+        internal static readonly string[] RootFields = LoadNominatedFromConfig();
+
+        private static string[] LoadNominatedFromConfig()
         {
-            "AssetRegisterName", "AssetNumber", "Description", "ShortDescription", "Status","OperatingStatus"
-        };
+            var defaults = new[]
+            {
+                "AssetRegisterName", "AssetNumber", "Description",
+                "ShortDescription", "Status", "OperatingStatus"
+            };
+            try
+            {
+                if (!File.Exists(DefaultConfigPath)) return defaults;
+                using var stream = File.OpenRead(DefaultConfigPath);
+                using var doc = JsonDocument.Parse(stream);
+                if (doc.RootElement.TryGetProperty("nominated_fields", out var nf) &&
+                    nf.ValueKind == JsonValueKind.Array)
+                {
+                    var list = new List<string>();
+                    foreach (var e in nf.EnumerateArray())
+                    {
+                        if (e.ValueKind == JsonValueKind.String)
+                        {
+                            var s = e.GetString();
+                            if (!string.IsNullOrEmpty(s)) list.Add(s);
+                        }
+                    }
+                    if (list.Count > 0) return list.ToArray();
+                }
+            }
+            catch { /* fall through to defaults */ }
+            return defaults;
+        }
 
         public string Service { get; }
         public string ConfigPath { get; }
