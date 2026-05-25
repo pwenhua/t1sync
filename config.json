@@ -40,13 +40,13 @@
     {
         "local":{
             "type": "sqlserver",
-            "connection_string": "Server=PENG;Database=AssetDB;Trusted_Connection=True;TrustServerCertificate=True;",
+            "connection_string": "Server=PENG;Database=AssetDB;Trusted_Connection=True;Encrypt=False;",
             "table": "t1.workshop"
         },
 
       "mcc": {
         "type": "sqlserver",
-        "connection_string": "server=svrsql2019t;database=assetdb_test;Integrated Security=SSPI;",
+        "connection_string": "server=svrsql2019t;database=assetdb_test;Trusted_Connection=True;Encrypt=False;;",
         "table": "t1.workshop"
       }
     }
