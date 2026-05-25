@@ -257,6 +257,73 @@ namespace T1Sync
         //
         // Header layout is the same 6-row scheme T1Client uses, so the output
         // is consumable by extract_asset / sync_asset_from_excel unchanged.
+        // ---------- Step 7: CSV → bare-bones data (no header at all) ----------
+        //
+        // The simplest possible output: ATTRIBUTE rows dropped, only the
+        // nominated direct-field columns kept, NO header row. Row 1 onwards
+        // is data — one row per ASSET LineType in the source CSV.
+        public string TemplateSimple0(string xlsxPath, string sheet)
+        {
+            var rows = ReadCsv(_csvPath);
+            if (rows.Count < 2) return xlsxPath;
+
+            var headerLine = rows[1];
+            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < headerLine.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(headerLine[i]) && !headerIndex.ContainsKey(headerLine[i]))
+                    headerIndex[headerLine[i]] = i;
+            }
+
+            int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
+
+            var assets = new List<List<string>>();
+            if (lineTypeIdx >= 0)
+            {
+                foreach (var row in rows.Skip(2))
+                {
+                    if (lineTypeIdx < row.Count &&
+                        row[lineTypeIdx].Equals("ASSET", StringComparison.OrdinalIgnoreCase))
+                    {
+                        assets.Add(row);
+                    }
+                }
+            }
+
+            var dir = Path.GetDirectoryName(xlsxPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
+            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
+
+            var sheetName = UniqueSheetName(wb, sheet);
+            var ws = wb.Worksheets.Add(sheetName);
+
+            // Text format on every column so values like "0100038" keep their
+            // leading zeros (there's no row-5 dataType row to drive formatting).
+            for (int i = 0; i < _nominatedFields.Count; i++)
+                ws.Column(i + 1).Style.NumberFormat.Format = "@";
+
+            // Row 1+: ASSET data only — no header row.
+            for (int r = 0; r < assets.Count; r++)
+            {
+                var asset = assets[r];
+                int rowNum = 1 + r;
+                for (int i = 0; i < _nominatedFields.Count; i++)
+                {
+                    var f = _nominatedFields[i];
+                    if (headerIndex.TryGetValue(f, out var idx) &&
+                        idx < asset.Count && !string.IsNullOrEmpty(asset[idx]))
+                    {
+                        ws.Cell(rowNum, i + 1).Value = asset[idx];
+                    }
+                }
+            }
+
+            wb.SaveAs(xlsxPath);
+            return xlsxPath;
+        }
+
         // ---------- Step 6: CSV → ultra-compact flat Excel (nominated fields only) ----------
         //
         // Even simpler than TemplateSimple1: the output has ONLY the nominated

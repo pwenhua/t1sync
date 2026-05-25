@@ -85,12 +85,13 @@ namespace T1Sync
             Debug.WriteLine($"CSV → meta: {metaJson}  +  {metaXlsx}");
         }
 
-        // Runs all three CSV → Excel transforms in one click. They all write
+        // Runs all four CSV → Excel transforms in one click. They all write
         // into the SAME workbook, each as a separate sheet (UniqueSheetName
-        // auto-appends "01", "02" when a sheet with that base name exists).
+        // auto-appends "01", "02"… when a sheet with that base name exists).
         //   Sheet 1 ("Tree_Street Tree")   ← Template2FlatBrief (6-row header)
         //   Sheet 2 ("Tree_Street Tree01") ← TemplateSimple1    (2-row CSV-shape)
         //   Sheet 3 ("Tree_Street Tree02") ← TemplateSimple2    (1-row compact)
+        //   Sheet 4 ("Tree_Street Tree03") ← TemplateSimple0    (no header, data only)
         private static void CsvDemo()
         {
             const string csvSource = "ASSET_Export_25052026-011611.csv";
@@ -103,8 +104,9 @@ namespace T1Sync
             t.Template2FlatBrief(outXlsx, sheet);
             t.TemplateSimple1(outXlsx, sheet);
             t.TemplateSimple2(outXlsx, sheet);
+            t.TemplateSimple0(outXlsx, sheet);
 
-            Debug.WriteLine($"CSV → {outXlsx} (3 sheets)");
+            Debug.WriteLine($"CSV → {outXlsx} (4 sheets)");
         }
     }
 }
