@@ -11,8 +11,8 @@ namespace T1Sync
 
         private void button1_Click(object sender, EventArgs e)
         {
-            var xlsxFile = @"https://maroondahcc.sharepoint.com/sites/AssetsWorkspace/Shared%20Documents/Asset%20Management/AssetRegister/AssetRegisterTest.xlsx?web=1";
-            //var xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
+            //var xlsxFile = @"https://maroondahcc.sharepoint.com/sites/AssetsWorkspace/Shared%20Documents/Asset%20Management/AssetRegister/AssetRegisterTest.xlsx?web=1";
+            var xlsxFile = @"c:/temp/workshop-TP_AR.xlsx";
 
             // Factory picks T1Client_Interop (URL) or T1Client_ClosedXML (local) automatically.
             var service = "workshop-TP";
@@ -34,7 +34,7 @@ namespace T1Sync
 
             //T1ClientFactory.SyncAssetFromExcel(service, xlsxFile, sheet, firstRow, lastRow, dryrun: true);
 
-            T1ClientFactory.ExtractAsset(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance: "local");
+            T1ClientFactory.ExtractAsset(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance: "mcc");
         }
     }
 }
