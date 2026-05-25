@@ -99,18 +99,33 @@ class T1Client:
 
     @staticmethod
     def parse_assetitem_meta(asset: dict) -> dict:
-        """Flat schema: each AttributeCode becomes a top-level scalar (its SearchPath),
-        and each captioned attribute becomes a top-level entry whose value is
-        [AttributeCode, "level_<n>", <field-suffix>, <dataType>]."""
-        result: dict = {}
+        """Hierarchical schema:
+            {
+              "fields": { <fieldName>: <dataType>, ... },
+              "attributes": {
+                <AttributeCode>: {
+                  "dataType": <char>,                       # primary SearchPath dataType
+                  "levels": {                               # optional, only if captioned
+                    "<n>": {
+                      "<suffix>": [<caption>, <dataType>],
+                      ...
+                    },
+                    ...
+                  }
+                },
+                ...
+              }
+            }
+        """
+        fields: dict = {}
+        attributes: dict = {}
 
-        # Root fields — store just the inferred dataType.
+        # Direct/root fields.
         for field in ROOT_FIELDS:
             if field in asset:
-                result[field] = T1Client._infer_data_type(asset[field])
+                fields[field] = T1Client._infer_data_type(asset[field])
 
-        # Group AssetAttributes by AttributeCode so each group's captions land
-        # right after that group's top-level scalar.
+        # Group AssetAttributes by AttributeCode (preserve first-seen order).
         groups: dict[str, list] = {}
         for entry in asset.get("AssetAttributes", []):
             code = entry.get("AttributeCode")
@@ -119,13 +134,17 @@ class T1Client:
             groups.setdefault(code, []).append(entry)
 
         for code, entries in groups.items():
-            # AttributeCode → inferred dataType of the primary entry's SearchPath.
+            attr_node: dict = {}
+
+            # Primary entry → top-level dataType for this AttributeCode.
             primary = next((e for e in entries if e.get("IsPrimaryValue")), None)
             if primary is not None:
-                result[code] = ["Attribute", T1Client._infer_data_type(primary.get("SearchPath", ""))]
+                attr_node["dataType"] = T1Client._infer_data_type(primary.get("SearchPath", ""))
+            else:
+                attr_node["dataType"] = "A"
 
-            # Captioned attributes — collect, sort by level, then add.
-            items: list[tuple[int, str, list]] = []
+            # Captioned sub-fields, grouped by integer level.
+            levels: dict = {}
             for entry in entries:
                 search_path = entry.get("SearchPath", "")
                 level = len(search_path.split("\\")) if search_path else 0
@@ -144,13 +163,17 @@ class T1Client:
                     if not caption:
                         continue
                     suffix = value_key.removeprefix("AttributeItem")
-                    items.append((level, caption, [code, f"level_{level}", suffix, meta.get("DataType", "")]))
+                    level_dict = levels.setdefault(str(level), {})
+                    if suffix not in level_dict:
+                        level_dict[suffix] = [caption, meta.get("DataType", "")]
 
-            items.sort(key=lambda x: x[0])
-            for _, caption, value in items:
-                result[caption] = value
+            if levels:
+                # Sort levels by integer for stable column order downstream.
+                attr_node["levels"] = {k: levels[k] for k in sorted(levels.keys(), key=int)}
 
-        return result
+            attributes[code] = attr_node
+
+        return {"fields": fields, "attributes": attributes}
 
     def parse_assets_meta(self) -> dict:
         """
@@ -199,19 +222,36 @@ class T1Client:
     @staticmethod
     def _build_meta_columns(node_meta: dict) -> list[tuple[str, str, str, str, str, str]]:
         """Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
-        from the flat node_meta dict. `kind` is "Attribute" for Attribute fields, "" for
-        root fields."""
+        from the hierarchical node_meta dict (see parse_assetitem_meta).
+        Column ordering: all direct fields first, then each attribute (top-level scalar,
+        followed by its captioned sub-fields sorted by level)."""
         columns: list[tuple[str, str, str, str, str, str]] = []
-        for key, value in node_meta.items():
-            if isinstance(value, list) and len(value) == 4:
-                # Captioned attribute: [AttributeCode, "level_X", suffix, dataType]
-                columns.append(("Attribute", str(value[0]), str(value[1]), str(value[2]), str(value[3]), key))
-            elif isinstance(value, list) and len(value) == 2:
-                # Top-level Attribute scalar: ["Attribute", dataType]
-                columns.append((str(value[0]), "", "", "", str(value[1]), key))
-            else:
-                # Root field — bare dataType char.
-                columns.append(("", "", "", "", str(value), key))
+
+        # 1. Direct fields.
+        for field_name, data_type in node_meta.get("fields", {}).items():
+            columns.append(("", "", "", "", str(data_type), str(field_name)))
+
+        # 2. Attributes.
+        for attr_code, attr_node in node_meta.get("attributes", {}).items():
+            if not isinstance(attr_node, dict):
+                continue
+            data_type = str(attr_node.get("dataType", "A"))
+            columns.append(("Attribute", "", "", "", data_type, str(attr_code)))
+
+            levels = attr_node.get("levels", {})
+            for level_key in sorted(levels.keys(), key=lambda k: int(k) if str(k).isdigit() else 0):
+                level_dict = levels[level_key]
+                if not isinstance(level_dict, dict):
+                    continue
+                for suffix, leaf in level_dict.items():
+                    caption, leaf_dt = "", ""
+                    if isinstance(leaf, list) and len(leaf) >= 2:
+                        caption, leaf_dt = str(leaf[0]), str(leaf[1])
+                    elif isinstance(leaf, list) and len(leaf) == 1:
+                        caption = str(leaf[0])
+                    columns.append(("Attribute", str(attr_code), f"level_{level_key}",
+                                    str(suffix), leaf_dt, caption))
+
         return columns
 
     def save_meta_to_excel(self, file: str | Path, meta: dict | None = None) -> Path:

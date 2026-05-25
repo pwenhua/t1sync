@@ -1,52 +1,30 @@
 {
   "Tree/Street Tree": {
-    "AssetRegisterName": "A",
-    "AssetNumber": "A",
-    "Description": "A",
-    "ShortDescription": "A",
-    "Status": "A",
-    "OperatingStatus": "A",
-    "ASSET_TYPE": [
-      "Attribute",
-      "A"
-    ],
-    "Height(m)": [
-      "ASSET_TYPE",
-      "level_1",
-      "Userfield1",
-      "N"
-    ],
-    "Width(m)": [
-      "ASSET_TYPE",
-      "level_1",
-      "Userfield2",
-      "N"
-    ],
-    "Tr Botanical Name": [
-      "ASSET_TYPE",
-      "level_1",
-      "SelectionType1",
-      "A"
-    ],
-    "TREE TYPE": [
-      "ASSET_TYPE",
-      "level_1",
-      "SelectionType2",
-      "A"
-    ],
-    "Near Power Line": [
-      "ASSET_TYPE",
-      "level_2",
-      "Userfield1",
-      "A"
-    ],
-    "LOCATION": [
-      "Attribute",
-      "A"
-    ],
-    "SERVICEAREA": [
-      "Attribute",
-      "A"
-    ]
+    "fields": {
+      "AssetRegisterName": "A",
+      "AssetNumber": "A",
+      "Description": "A",
+      "ShortDescription": "A",
+      "Status": "A",
+      "OperatingStatus": "A"
+    },
+    "attributes": {
+      "ASSET_TYPE": {
+        "dataType": "A",
+        "levels": {
+          "1": {
+            "Userfield1":     ["Height(m)", "N"],
+            "Userfield2":     ["Width(m)", "N"],
+            "SelectionType1": ["Tr Botanical Name", "A"],
+            "SelectionType2": ["TREE TYPE", "A"]
+          },
+          "2": {
+            "Userfield1": ["Near Power Line", "A"]
+          }
+        }
+      },
+      "LOCATION":    { "dataType": "A" },
+      "SERVICEAREA": { "dataType": "A" }
+    }
   }
 }

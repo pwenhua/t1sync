@@ -216,112 +216,120 @@ namespace T1Sync
 
         public static Dictionary<string, object> ParseAssetItemMeta(JsonElement asset)
         {
-            // Flat schema: each AttributeCode becomes a top-level scalar (its
-            // primary SearchPath's inferred dataType), and each captioned
-            // attribute becomes a top-level entry whose value is
-            // [AttributeCode, "level_<n>", <field-suffix>, <dataType>].
-            var result = new Dictionary<string, object>();
+            // Hierarchical schema (see T1Client.parse_assetitem_meta docstring):
+            //   { "fields": { name: dataType, ... },
+            //     "attributes": { code: { "dataType": "<c>", "levels": { "<n>": { suffix: [caption, dt], ... }, ... } }, ... } }
+            var fields = new Dictionary<string, object>();
+            var attributes = new Dictionary<string, object>();
 
-            // Root fields — store just the inferred dataType.
+            // Direct/root fields.
             foreach (var field in RootFields)
             {
                 if (asset.TryGetProperty(field, out var fieldProp))
                 {
-                    result[field] = InferDataType(fieldProp);
+                    fields[field] = InferDataType(fieldProp);
                 }
             }
 
-            if (!asset.TryGetProperty("AssetAttributes", out var attributes) || attributes.ValueKind != JsonValueKind.Array)
+            if (asset.TryGetProperty("AssetAttributes", out var attrs) && attrs.ValueKind == JsonValueKind.Array)
             {
-                return result;
-            }
-
-            // Group AssetAttributes by AttributeCode, preserving first-seen order.
-            var groups = new Dictionary<string, List<JsonElement>>();
-            var groupOrder = new List<string>();
-            foreach (var entry in attributes.EnumerateArray())
-            {
-                if (!entry.TryGetProperty("AttributeCode", out var codeProp) || codeProp.ValueKind != JsonValueKind.String)
-                    continue;
-                var code = codeProp.GetString();
-                if (string.IsNullOrEmpty(code)) continue;
-                if (!groups.TryGetValue(code, out var list))
+                // Group AssetAttributes by AttributeCode, preserving first-seen order.
+                var groups = new Dictionary<string, List<JsonElement>>();
+                var groupOrder = new List<string>();
+                foreach (var entry in attrs.EnumerateArray())
                 {
-                    list = new List<JsonElement>();
-                    groups[code] = list;
-                    groupOrder.Add(code);
-                }
-                list.Add(entry);
-            }
-
-            foreach (var code in groupOrder)
-            {
-                var entries = groups[code];
-
-                // AttributeCode → inferred dataType of the primary entry's SearchPath.
-                JsonElement? primary = null;
-                foreach (var e in entries)
-                {
-                    if (e.TryGetProperty("IsPrimaryValue", out var pv) &&
-                        (pv.ValueKind == JsonValueKind.True ||
-                         (pv.ValueKind == JsonValueKind.String && pv.GetString()?.ToLower() == "true")))
+                    if (!entry.TryGetProperty("AttributeCode", out var codeProp) ||
+                        codeProp.ValueKind != JsonValueKind.String) continue;
+                    var code = codeProp.GetString();
+                    if (string.IsNullOrEmpty(code)) continue;
+                    if (!groups.TryGetValue(code, out var list))
                     {
-                        primary = e;
-                        break;
+                        list = new List<JsonElement>();
+                        groups[code] = list;
+                        groupOrder.Add(code);
                     }
-                }
-                if (primary.HasValue)
-                {
-                    var sp = primary.Value.TryGetProperty("SearchPath", out var spProp) ? spProp : default;
-                    result[code] = new object[] { "Attribute", InferDataType(sp) };
+                    list.Add(entry);
                 }
 
-                // Captioned attributes — collect, sort by level, then add.
-                var items = new List<(int level, string caption, object[] value)>();
-                foreach (var entry in entries)
+                foreach (var code in groupOrder)
                 {
-                    var searchPath = entry.TryGetProperty("SearchPath", out var spProp) && spProp.ValueKind == JsonValueKind.String
-                        ? spProp.GetString()! : "";
-                    int level = string.IsNullOrEmpty(searchPath) ? 0 : searchPath.Split('\\').Length;
+                    var entries = groups[code];
+                    var attrNode = new Dictionary<string, object>();
 
-                    foreach (var prop in entry.EnumerateObject())
+                    // Primary entry → top-level dataType for this AttributeCode.
+                    JsonElement? primary = null;
+                    foreach (var e in entries)
                     {
-                        var match = MetaKeyRegex.Match(prop.Name);
-                        if (!match.Success || prop.Value.ValueKind != JsonValueKind.String)
-                            continue;
-                        var valueKey = match.Groups[1].Value;
-                        if (!entry.TryGetProperty(valueKey, out _)) continue;
-
-                        try
+                        if (e.TryGetProperty("IsPrimaryValue", out var pv) &&
+                            (pv.ValueKind == JsonValueKind.True ||
+                             (pv.ValueKind == JsonValueKind.String && pv.GetString()?.ToLower() == "true")))
                         {
-                            using var metaDoc = JsonDocument.Parse(prop.Value.GetString()!);
-                            var meta = metaDoc.RootElement;
-                            if (!meta.TryGetProperty("Caption", out var capProp) || capProp.ValueKind != JsonValueKind.String)
-                                continue;
-                            var caption = capProp.GetString()!;
-                            if (string.IsNullOrEmpty(caption)) continue;
-                            var dataType = meta.TryGetProperty("DataType", out var dtProp) && dtProp.ValueKind == JsonValueKind.String
-                                ? dtProp.GetString()! : "";
-                            var suffix = valueKey.StartsWith("AttributeItem")
-                                ? valueKey.Substring("AttributeItem".Length)
-                                : valueKey;
-                            items.Add((level, caption, new object[] { code, $"level_{level}", suffix, dataType }));
-                        }
-                        catch (JsonException)
-                        {
-                            // ignore invalid json
+                            primary = e;
+                            break;
                         }
                     }
-                }
+                    var sp = primary.HasValue && primary.Value.TryGetProperty("SearchPath", out var spProp) ? spProp : default;
+                    attrNode["dataType"] = primary.HasValue ? InferDataType(sp) : "A";
 
-                items.Sort((a, b) => a.level.CompareTo(b.level));
-                foreach (var (_, caption, value) in items)
-                {
-                    result[caption] = value;
+                    // Captioned sub-fields grouped by integer level (key is the level as a string).
+                    var levels = new SortedDictionary<int, Dictionary<string, object>>();
+                    foreach (var entry in entries)
+                    {
+                        var searchPath = entry.TryGetProperty("SearchPath", out var spProp2) && spProp2.ValueKind == JsonValueKind.String
+                            ? spProp2.GetString()! : "";
+                        int level = string.IsNullOrEmpty(searchPath) ? 0 : searchPath.Split('\\').Length;
+
+                        foreach (var prop in entry.EnumerateObject())
+                        {
+                            var match = MetaKeyRegex.Match(prop.Name);
+                            if (!match.Success || prop.Value.ValueKind != JsonValueKind.String) continue;
+                            var valueKey = match.Groups[1].Value;
+                            if (!entry.TryGetProperty(valueKey, out _)) continue;
+
+                            try
+                            {
+                                using var metaDoc = JsonDocument.Parse(prop.Value.GetString()!);
+                                var meta = metaDoc.RootElement;
+                                if (!meta.TryGetProperty("Caption", out var capProp) || capProp.ValueKind != JsonValueKind.String)
+                                    continue;
+                                var caption = capProp.GetString()!;
+                                if (string.IsNullOrEmpty(caption)) continue;
+                                var dataType = meta.TryGetProperty("DataType", out var dtProp) && dtProp.ValueKind == JsonValueKind.String
+                                    ? dtProp.GetString()! : "";
+                                var suffix = valueKey.StartsWith("AttributeItem")
+                                    ? valueKey.Substring("AttributeItem".Length)
+                                    : valueKey;
+
+                                if (!levels.TryGetValue(level, out var levelDict))
+                                {
+                                    levelDict = new Dictionary<string, object>();
+                                    levels[level] = levelDict;
+                                }
+                                if (!levelDict.ContainsKey(suffix))
+                                {
+                                    levelDict[suffix] = new object[] { caption, dataType };
+                                }
+                            }
+                            catch (JsonException) { /* ignore */ }
+                        }
+                    }
+
+                    if (levels.Count > 0)
+                    {
+                        var levelsOut = new Dictionary<string, object>();
+                        foreach (var kvp in levels) levelsOut[kvp.Key.ToString()] = kvp.Value;
+                        attrNode["levels"] = levelsOut;
+                    }
+
+                    attributes[code] = attrNode;
                 }
             }
 
-            return result;
+            return new Dictionary<string, object>
+            {
+                ["fields"]     = fields,
+                ["attributes"] = attributes,
+            };
         }
 
         public Dictionary<string, object> ParseAssetsMeta()
@@ -400,7 +408,9 @@ namespace T1Sync
         private static List<(string, string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
         {
             // Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
-            // from the flat node_meta dict. kind is "Attribute" for Attribute fields, "" for root fields.
+            // from the hierarchical node_meta dict (see ParseAssetItemMeta).
+            // Column ordering: all direct fields first, then each attribute (top-level scalar,
+            // followed by its captioned sub-fields sorted by level).
             var columns = new List<(string, string, string, string, string, string)>();
             JsonElement root;
 
@@ -414,39 +424,55 @@ namespace T1Sync
                 root = JsonDocument.Parse(json).RootElement;
             }
 
-            foreach (var prop in root.EnumerateObject())
+            // 1. Direct fields.
+            if (root.TryGetProperty("fields", out var fieldsNode) && fieldsNode.ValueKind == JsonValueKind.Object)
             {
-                var key = prop.Name;
-                var value = prop.Value;
+                foreach (var prop in fieldsNode.EnumerateObject())
+                {
+                    columns.Add(("", "", "", "", prop.Value.ToString() ?? "", prop.Name));
+                }
+            }
 
-                if (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 4)
+            // 2. Attributes.
+            if (root.TryGetProperty("attributes", out var attrsNode) && attrsNode.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var attrProp in attrsNode.EnumerateObject())
                 {
-                    // Captioned attribute: [AttributeCode, "level_X", suffix, dataType]
-                    columns.Add((
-                        "Attribute",
-                        value[0].ToString(),
-                        value[1].ToString(),
-                        value[2].ToString(),
-                        value[3].ToString(),
-                        key
-                    ));
-                }
-                else if (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 2)
-                {
-                    // Top-level Attribute scalar: ["Attribute", dataType]
-                    columns.Add((
-                        value[0].ToString(),
-                        "",
-                        "",
-                        "",
-                        value[1].ToString(),
-                        key
-                    ));
-                }
-                else
-                {
-                    // Root field — bare dataType char.
-                    columns.Add(("", "", "", "", value.ToString() ?? "", key));
+                    var attrCode = attrProp.Name;
+                    var attrNode = attrProp.Value;
+                    if (attrNode.ValueKind != JsonValueKind.Object) continue;
+
+                    var dataType = attrNode.TryGetProperty("dataType", out var dtProp) && dtProp.ValueKind == JsonValueKind.String
+                        ? dtProp.GetString()! : "A";
+                    columns.Add(("Attribute", "", "", "", dataType, attrCode));
+
+                    if (!attrNode.TryGetProperty("levels", out var levelsNode) || levelsNode.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    var sortedLevels = levelsNode.EnumerateObject()
+                        .OrderBy(p => int.TryParse(p.Name, out var lvl) ? lvl : 0);
+
+                    foreach (var levelProp in sortedLevels)
+                    {
+                        var levelKey = levelProp.Name;
+                        if (levelProp.Value.ValueKind != JsonValueKind.Object) continue;
+                        foreach (var suffixProp in levelProp.Value.EnumerateObject())
+                        {
+                            var suffix = suffixProp.Name;
+                            var leaf = suffixProp.Value;
+                            string caption = "", leafDt = "";
+                            if (leaf.ValueKind == JsonValueKind.Array && leaf.GetArrayLength() >= 2)
+                            {
+                                caption = leaf[0].ToString();
+                                leafDt = leaf[1].ToString();
+                            }
+                            else if (leaf.ValueKind == JsonValueKind.Array && leaf.GetArrayLength() == 1)
+                            {
+                                caption = leaf[0].ToString();
+                            }
+                            columns.Add(("Attribute", attrCode, $"level_{levelKey}", suffix, leafDt, caption));
+                        }
+                    }
                 }
             }
             return columns;
