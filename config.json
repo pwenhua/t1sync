@@ -42,6 +42,12 @@
             "type": "sqlserver",
             "connection_string": "Server=PENG;Database=AssetDB;Trusted_Connection=True;TrustServerCertificate=True;",
             "table": "t1.workshop"
-        }
+        },
+
+      "mcc": {
+        "type": "sqlserver",
+        "connection_string": "server=svrsql2019t;database=assetdb_test;Integrated Security=SSPI;",
+        "table": "t1.workshop"
+      }
     }
 }
