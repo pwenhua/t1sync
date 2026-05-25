@@ -1,5 +1,5 @@
 // T1Client_ClosedXML.cs - drop-in alternative to T1Client_Interop that uses
-// ClosedXML only (no Microsoft.Office.Interop.Excel / no OnlineExcelHelper).
+// ClosedXML only (no Microsoft.Office.Interop.Excel).
 //
 // The 'file' parameter must be a local path; SharePoint/OneDrive URLs are not
 // supported here (download/upload them separately if needed).
@@ -25,10 +25,65 @@ namespace T1Sync
         public T1Client_ClosedXML(string service, string configPath = DefaultConfigPath)
             : base(service, configPath) { }
 
+        public new string SaveMetaToExcel(string file, Dictionary<string, object>? meta = null)
+        {
+            // Pure ClosedXML version — local file only, no Excel needed.
+            // Use this instead of the base T1Client_Interop.SaveMetaToExcel when
+            // `file` is a local path (much faster, no COM round-trip).
+            if (meta == null)
+            {
+                var metaPath = MetaPath;
+                if (!File.Exists(metaPath))
+                    throw new FileNotFoundException($"Metadata file not found: {metaPath}");
+                var jsonText = File.ReadAllText(metaPath, Encoding.UTF8);
+                meta = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonText);
+            }
+
+            var dir = Path.GetDirectoryName(file);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var wb = File.Exists(file) ? new XLWorkbook(file) : new XLWorkbook();
+
+            if (wb.Worksheets.Contains("Sheet"))
+                wb.Worksheets.Delete("Sheet");
+
+            foreach (var kvp in meta!)
+            {
+                var sheetName = UniqueSheetNameLocal(wb, kvp.Key);
+                var ws = wb.Worksheets.Add(sheetName);
+                var columns = BuildMetaColumnsLocal(kvp.Value);
+
+                for (int i = 0; i < columns.Count; i++)
+                {
+                    var c = columns[i];
+                    ws.Cell(1, i + 1).Value = c.Item1;
+                    ws.Cell(2, i + 1).Value = c.Item2;
+                    ws.Cell(3, i + 1).Value = c.Item3;
+                    ws.Cell(4, i + 1).Value = c.Item4;
+                    ws.Cell(5, i + 1).Value = c.Item5;
+                    ws.Cell(6, i + 1).Value = c.Item6;
+
+                    var fmt = c.Item5 switch
+                    {
+                        "N" => "General",
+                        "D" => "yyyy-mm-dd",
+                        _   => "@",
+                    };
+                    ws.Column(i + 1).Style.NumberFormat.Format = fmt;
+                }
+            }
+
+            if (!wb.Worksheets.Any()) wb.Worksheets.Add("Sheet");
+
+            wb.SaveAs(file);
+            Debug.WriteLine($"Saved spreadsheet to {file}");
+            return file;
+        }
+
         public new string SyncAssetFromExcel(string file, string sheet, int firstRow, int lastRow, bool dryrun = false)
         {
-            // Same control flow as T1Client_Interop.SyncAssetFromExcel, minus the
-            // OnlineExcelHelper round-trip. `file` is opened directly with ClosedXML.
+            // Same control flow as T1Client_Interop.SyncAssetFromExcel, but `file`
+            // is opened directly with ClosedXML (no Excel COM round-trip).
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
 
@@ -394,18 +449,31 @@ namespace T1Sync
 
         // ------- Local copies of the private helpers from T1Client_Interop (so this file is self-contained) -------
 
-        private static string SanitizeSheetNameLocal(string name)
+        // Thin pass-through to the shared MetaSchema.BuildColumns helper —
+        // guarantees byte-identical column layout to T1Client_Interop / CsvTransformer.
+        private static List<(string, string, string, string, string, string)> BuildMetaColumnsLocal(object nodeMetaObj)
         {
-            var invalidChars = new[] { ':', '\\', '/', '?', '*', '[', ']' };
-            var cleaned = new StringBuilder(name.Length);
-            foreach (var ch in name)
-            {
-                cleaned.Append(invalidChars.Contains(ch) ? '_' : ch);
-            }
-            var result = cleaned.ToString();
-            if (result.Length > 31) result = result.Substring(0, 31);
-            return string.IsNullOrEmpty(result) ? "Sheet" : result;
+            var typed = MetaSchema.BuildColumns(nodeMetaObj);
+            var columns = new List<(string, string, string, string, string, string)>(typed.Count);
+            foreach (var c in typed) columns.Add((c.Kind, c.Code, c.Level, c.Suffix, c.DataType, c.Header));
+            return columns;
         }
+
+        private static string UniqueSheetNameLocal(XLWorkbook wb, string baseName)
+        {
+            var name = SanitizeSheetNameLocal(baseName);
+            if (!wb.Worksheets.Contains(name)) return name;
+            var stem = name.Length > 29 ? name.Substring(0, 29) : name;
+            for (int i = 1; i < 100; i++)
+            {
+                var cand = stem + i.ToString("D2");
+                if (!wb.Worksheets.Contains(cand)) return cand;
+            }
+            throw new InvalidOperationException($"Could not allocate unique sheet name for '{baseName}'");
+        }
+
+        // Thin pass-through to MetaSchema (single source of truth for sheet naming).
+        private static string SanitizeSheetNameLocal(string name) => MetaSchema.SanitizeSheetName(name);
 
         private static void SetAttributeValueLocal(JsonObject asset, string attrCode, string level, string suffix, object? value)
         {

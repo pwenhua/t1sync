@@ -296,81 +296,18 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        // 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
-        // from the hierarchical node_meta shape. Matches T1Client_Interop.BuildMetaColumns.
+        // Thin pass-through to the shared MetaSchema.BuildColumns helper —
+        // guarantees byte-identical column layout to T1Client_Interop / T1Client_ClosedXML.
         private static List<(string, string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
         {
-            var columns = new List<(string, string, string, string, string, string)>();
-            JsonElement root;
-
-            if (nodeMetaObj is JsonElement je) root = je;
-            else
-            {
-                var json = JsonSerializer.Serialize(nodeMetaObj);
-                root = JsonDocument.Parse(json).RootElement;
-            }
-
-            if (root.TryGetProperty("fields", out var fieldsNode) && fieldsNode.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var prop in fieldsNode.EnumerateObject())
-                {
-                    columns.Add(("", "", "", "", prop.Value.ToString() ?? "", prop.Name));
-                }
-            }
-
-            if (root.TryGetProperty("attributes", out var attrsNode) && attrsNode.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var attrProp in attrsNode.EnumerateObject())
-                {
-                    var attrCode = attrProp.Name;
-                    var attrNode = attrProp.Value;
-                    if (attrNode.ValueKind != JsonValueKind.Object) continue;
-
-                    var dataType = attrNode.TryGetProperty("dataType", out var dtProp) && dtProp.ValueKind == JsonValueKind.String
-                        ? dtProp.GetString()! : "A";
-                    columns.Add(("Attribute", "", "", "", dataType, attrCode));
-
-                    if (!attrNode.TryGetProperty("levels", out var levelsNode) || levelsNode.ValueKind != JsonValueKind.Object)
-                        continue;
-
-                    var sortedLevels = levelsNode.EnumerateObject()
-                        .OrderBy(p => int.TryParse(p.Name, out var lvl) ? lvl : 0);
-
-                    foreach (var levelProp in sortedLevels)
-                    {
-                        var levelKey = levelProp.Name;
-                        if (levelProp.Value.ValueKind != JsonValueKind.Object) continue;
-                        foreach (var suffixProp in levelProp.Value.EnumerateObject())
-                        {
-                            var suffix = suffixProp.Name;
-                            var leaf = suffixProp.Value;
-                            string caption = "", leafDt = "";
-                            if (leaf.ValueKind == JsonValueKind.Array && leaf.GetArrayLength() >= 2)
-                            {
-                                caption = leaf[0].ToString();
-                                leafDt = leaf[1].ToString();
-                            }
-                            else if (leaf.ValueKind == JsonValueKind.Array && leaf.GetArrayLength() == 1)
-                            {
-                                caption = leaf[0].ToString();
-                            }
-                            columns.Add(("Attribute", attrCode, $"level_{levelKey}", suffix, leafDt, caption));
-                        }
-                    }
-                }
-            }
+            var typed = MetaSchema.BuildColumns(nodeMetaObj);
+            var columns = new List<(string, string, string, string, string, string)>(typed.Count);
+            foreach (var c in typed) columns.Add((c.Kind, c.Code, c.Level, c.Suffix, c.DataType, c.Header));
             return columns;
         }
 
-        private static string SanitizeSheetName(string name)
-        {
-            var invalid = new[] { ':', '\\', '/', '?', '*', '[', ']' };
-            var sb = new StringBuilder(name.Length);
-            foreach (var c in name) sb.Append(invalid.Contains(c) ? '_' : c);
-            var result = sb.ToString();
-            if (result.Length > 31) result = result.Substring(0, 31);
-            return string.IsNullOrEmpty(result) ? "Sheet" : result;
-        }
+        // Thin pass-through to MetaSchema (single source of truth for sheet naming).
+        private static string SanitizeSheetName(string name) => MetaSchema.SanitizeSheetName(name);
 
         private static string UniqueSheetName(XLWorkbook wb, string baseName)
         {

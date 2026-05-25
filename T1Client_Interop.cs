@@ -378,18 +378,8 @@ namespace T1Sync
             return ParseAssetsMeta();
         }
 
-        private static string SanitizeSheetName(string name)
-        {
-            var invalidChars = new[] { ':', '\\', '/', '?', '*', '[', ']' };
-            var cleaned = new StringBuilder(name.Length);
-            foreach (var ch in name)
-            {
-                cleaned.Append(invalidChars.Contains(ch) ? '_' : ch);
-            }
-            var result = cleaned.ToString();
-            if (result.Length > 31) result = result.Substring(0, 31);
-            return string.IsNullOrEmpty(result) ? "Sheet" : result;
-        }
+        // Thin pass-through to MetaSchema (single source of truth for sheet naming).
+        private static string SanitizeSheetName(string name) => MetaSchema.SanitizeSheetName(name);
 
         private static string UniqueSheetName(XLWorkbook wb, string baseName)
         {
@@ -405,149 +395,120 @@ namespace T1Sync
             throw new InvalidOperationException($"Could not allocate unique sheet name for '{baseName}'");
         }
 
+        // Thin pass-through to the shared MetaSchema.BuildColumns helper.
+        // Kept on this class so existing callers compile unchanged.
         private static List<(string, string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
         {
-            // Produce 6-row column tuples (kind, AttributeCode, level, suffix, dataType, header)
-            // from the hierarchical node_meta dict (see ParseAssetItemMeta).
-            // Column ordering: all direct fields first, then each attribute (top-level scalar,
-            // followed by its captioned sub-fields sorted by level).
-            var columns = new List<(string, string, string, string, string, string)>();
-            JsonElement root;
-
-            if (nodeMetaObj is JsonElement je)
-            {
-                root = je;
-            }
-            else
-            {
-                var json = JsonSerializer.Serialize(nodeMetaObj);
-                root = JsonDocument.Parse(json).RootElement;
-            }
-
-            // 1. Direct fields.
-            if (root.TryGetProperty("fields", out var fieldsNode) && fieldsNode.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var prop in fieldsNode.EnumerateObject())
-                {
-                    columns.Add(("", "", "", "", prop.Value.ToString() ?? "", prop.Name));
-                }
-            }
-
-            // 2. Attributes.
-            if (root.TryGetProperty("attributes", out var attrsNode) && attrsNode.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var attrProp in attrsNode.EnumerateObject())
-                {
-                    var attrCode = attrProp.Name;
-                    var attrNode = attrProp.Value;
-                    if (attrNode.ValueKind != JsonValueKind.Object) continue;
-
-                    var dataType = attrNode.TryGetProperty("dataType", out var dtProp) && dtProp.ValueKind == JsonValueKind.String
-                        ? dtProp.GetString()! : "A";
-                    columns.Add(("Attribute", "", "", "", dataType, attrCode));
-
-                    if (!attrNode.TryGetProperty("levels", out var levelsNode) || levelsNode.ValueKind != JsonValueKind.Object)
-                        continue;
-
-                    var sortedLevels = levelsNode.EnumerateObject()
-                        .OrderBy(p => int.TryParse(p.Name, out var lvl) ? lvl : 0);
-
-                    foreach (var levelProp in sortedLevels)
-                    {
-                        var levelKey = levelProp.Name;
-                        if (levelProp.Value.ValueKind != JsonValueKind.Object) continue;
-                        foreach (var suffixProp in levelProp.Value.EnumerateObject())
-                        {
-                            var suffix = suffixProp.Name;
-                            var leaf = suffixProp.Value;
-                            string caption = "", leafDt = "";
-                            if (leaf.ValueKind == JsonValueKind.Array && leaf.GetArrayLength() >= 2)
-                            {
-                                caption = leaf[0].ToString();
-                                leafDt = leaf[1].ToString();
-                            }
-                            else if (leaf.ValueKind == JsonValueKind.Array && leaf.GetArrayLength() == 1)
-                            {
-                                caption = leaf[0].ToString();
-                            }
-                            columns.Add(("Attribute", attrCode, $"level_{levelKey}", suffix, leafDt, caption));
-                        }
-                    }
-                }
-            }
+            var typed = MetaSchema.BuildColumns(nodeMetaObj);
+            // Convert named-tuple list to the positional-tuple shape this file already uses.
+            var columns = new List<(string, string, string, string, string, string)>(typed.Count);
+            foreach (var c in typed) columns.Add((c.Kind, c.Code, c.Level, c.Suffix, c.DataType, c.Header));
             return columns;
         }
 
-        public string SaveMetaToExcel(string file, Dictionary<string, object>? meta = null)
+        public virtual string SaveMetaToExcel(string file, Dictionary<string, object>? meta = null)
         {
-#if USE_CLOSEDXML
+            // Excel COM Interop implementation — for SharePoint/OneDrive URLs and
+            // any path Excel can open. Local-only callers should prefer
+            // T1Client_ClosedXML.SaveMetaToExcel (pure ClosedXML, no Excel needed).
             if (meta == null)
             {
                 var metaPath = MetaPath;
                 if (!File.Exists(metaPath))
                     throw new FileNotFoundException($"Metadata file not found: {metaPath}");
-
                 var jsonText = File.ReadAllText(metaPath, Encoding.UTF8);
                 meta = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonText);
             }
 
-            var xlsxPath = file;
-            var dir = Path.GetDirectoryName(xlsxPath);
-            if (!string.IsNullOrEmpty(dir))
-            {
+            var dir = Path.GetDirectoryName(file);
+            if (!string.IsNullOrEmpty(dir) && !file.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 Directory.CreateDirectory(dir);
-            }
 
-            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
-            
-            if (wb.Worksheets.Contains("Sheet"))
+            Application xlApp = new Application();
+            xlApp.DisplayAlerts = false;
+            Microsoft.Office.Interop.Excel.Workbook? wb = null;
+            try
             {
-                wb.Worksheets.Delete("Sheet");
-            }
+                bool isUrl = file.StartsWith("http", StringComparison.OrdinalIgnoreCase);
+                bool exists = isUrl || File.Exists(file);
+                wb = exists
+                    ? xlApp.Workbooks.Open(file, 0, false)
+                    : xlApp.Workbooks.Add();
 
-            foreach (var kvp in meta!)
-            {
-                var nodeName = kvp.Key;
-                var sheetName = UniqueSheetName(wb, nodeName);
-
-                var ws = wb.Worksheets.Add(sheetName);
-                var columns = BuildMetaColumns(kvp.Value);
-
-                for (int i = 0; i < columns.Count; i++)
+                // Drop the default empty "Sheet" if we created a fresh workbook.
+                foreach (Microsoft.Office.Interop.Excel.Worksheet sh in wb.Worksheets)
                 {
-                    var colData = columns[i];
-                    ws.Cell(1, i + 1).Value = colData.Item1;
-                    ws.Cell(2, i + 1).Value = colData.Item2;
-                    ws.Cell(3, i + 1).Value = colData.Item3;
-                    ws.Cell(4, i + 1).Value = colData.Item4;
-                    ws.Cell(5, i + 1).Value = colData.Item5;
-                    ws.Cell(6, i + 1).Value = colData.Item6;
-
-                    var format = colData.Item5 switch
+                    if (sh.Name == "Sheet" || sh.Name == "Sheet1")
                     {
-                        "N" => "General",
-                        "D" => "yyyy-mm-dd",
-                        _   => "@",
-                    };
-                    ws.Column(i + 1).Style.NumberFormat.Format = format;
+                        if (wb.Worksheets.Count > 1) sh.Delete();
+                        break;
+                    }
                 }
-            }
 
-            if (!wb.Worksheets.Any())
+                foreach (var kvp in meta!)
+                {
+                    var sheetName = UniqueSheetNameCom(wb, kvp.Key);
+                    var ws = (Microsoft.Office.Interop.Excel.Worksheet)wb.Worksheets.Add(After: wb.Worksheets[wb.Worksheets.Count]);
+                    ws.Name = sheetName;
+
+                    var columns = BuildMetaColumns(kvp.Value);
+                    for (int i = 0; i < columns.Count; i++)
+                    {
+                        var c = columns[i];
+                        ws.Cells[1, i + 1].Value = c.Item1;
+                        ws.Cells[2, i + 1].Value = c.Item2;
+                        ws.Cells[3, i + 1].Value = c.Item3;
+                        ws.Cells[4, i + 1].Value = c.Item4;
+                        ws.Cells[5, i + 1].Value = c.Item5;
+                        ws.Cells[6, i + 1].Value = c.Item6;
+
+                        var fmt = c.Item5 switch
+                        {
+                            "N" => "General",
+                            "D" => "yyyy-mm-dd",
+                            _   => "@",
+                        };
+                        ((Microsoft.Office.Interop.Excel.Range)ws.Columns[i + 1]).NumberFormat = fmt;
+                    }
+                }
+
+                if (exists) wb.Save();
+                else wb.SaveAs(file, Microsoft.Office.Interop.Excel.XlFileFormat.xlOpenXMLWorkbook);
+
+                Debug.WriteLine($"Saved spreadsheet to {file}");
+            }
+            finally
             {
-                wb.Worksheets.Add("Sheet");
+                if (wb != null)
+                {
+                    try { wb.Close(); } catch { }
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
+                }
+                xlApp.Quit();
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(xlApp);
             }
+            return file;
+        }
 
-            wb.SaveAs(xlsxPath);
-            Debug.WriteLine($"Saved spreadsheet to {xlsxPath}");
-            return xlsxPath;
-#else
-            throw new NotImplementedException(
-                "SaveMetaToExcel requires the ClosedXML NuGet package. " +
-                "To enable it, install ClosedXML and uncomment '#define USE_CLOSEDXML' " +
-                "at the top of T1Client_Interop.cs (or add it to your project properties)."
-            );
-#endif
+        // COM-aware unique sheet name helper (parallel to the ClosedXML UniqueSheetName).
+        private static string UniqueSheetNameCom(Microsoft.Office.Interop.Excel.Workbook wb, string baseName)
+        {
+            var name = SanitizeSheetName(baseName);
+            if (!SheetExists(wb, name)) return name;
+            var stem = name.Length > 29 ? name.Substring(0, 29) : name;
+            for (int i = 1; i < 100; i++)
+            {
+                var cand = stem + i.ToString("D2");
+                if (!SheetExists(wb, cand)) return cand;
+            }
+            throw new InvalidOperationException($"Could not allocate unique sheet name for '{baseName}'");
+        }
+
+        private static bool SheetExists(Microsoft.Office.Interop.Excel.Workbook wb, string name)
+        {
+            foreach (Microsoft.Office.Interop.Excel.Worksheet sh in wb.Worksheets)
+                if (string.Equals(sh.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         private static object? JsonElementToValue(JsonElement el)
@@ -670,77 +631,6 @@ namespace T1Sync
             }
         }
 
-        private class OnlineExcelHelper : IDisposable
-        {
-            private Application? _app;
-            private string _originalFile;
-            public string LocalFilePath { get; }
-            public bool IsOnline { get; }
-
-            public OnlineExcelHelper(string file)
-            {
-                _originalFile = file;
-                IsOnline = file.StartsWith("http", StringComparison.OrdinalIgnoreCase);
-                if (IsOnline)
-                {
-                    _app = new Application();
-                    // For debugging — flip these to see Excel and any error/auth dialogs it raises.
-                    _app.Visible = true;
-                    _app.DisplayAlerts = true;
-                    var wb = _app.Workbooks.Open(file);
-                    LocalFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".xlsx");
-                    wb.SaveAs(LocalFilePath);
-                    wb.Close();
-                    System.Runtime.InteropServices.Marshal.ReleaseComObject(wb);
-                }
-                else
-                {
-                    LocalFilePath = file;
-                }
-            }
-
-            public void SaveBackToOnline()
-            {
-                if (!IsOnline || _app == null) return;
-
-                Microsoft.Office.Interop.Excel.Workbook? wb = null;
-                try
-                {
-                    wb = _app.Workbooks.Open(LocalFilePath); 
-                    wb.Save();
-                }
-                finally
-                { 
-                    if (wb != null)
-                    {
-                        wb.Save();
-                        wb.Close();
-                    }
-
-                    _app.Quit();
-                    System.Runtime.InteropServices.Marshal.ReleaseComObject(_app);
-
-
-                }
-            }
-
-            public void Dispose()
-            {
-                if (IsOnline)
-                {
-                    if (_app != null)
-                    {
-                        _app.Quit();
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(_app);
-                        _app = null;
-                    }
-                    if (File.Exists(LocalFilePath))
-                    {
-                        try { File.Delete(LocalFilePath); } catch { }
-                    }
-                }
-            }
-        }
 
         public void SyncAssetFromExcel(string excelFilePath, string sheet, int firstRow, int lastRow, bool dryrun = false)
         {
