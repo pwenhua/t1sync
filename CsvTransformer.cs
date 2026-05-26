@@ -257,18 +257,17 @@ namespace T1Sync
         //
         // Header layout is the same 6-row scheme T1Client uses, so the output
         // is consumable by extract_asset / sync_asset_from_excel unchanged.
-        // ---------- Step 7: CSV → cleaned template (nominated columns visible only) ----------
+        // ---------- Step 7: CSV → cleaned template (nominated columns, compacted) ----------
         //
         // Output layout:
-        //   Row 1   — verbatim CSV line 1 (the FORMAT line — kept as-is so the
-        //             output stays recognisable as a T1 ASSET template).
-        //   Row 2   — only the nominated column names, written at their ORIGINAL
-        //             CSV column positions. Non-nominated columns are left blank
-        //             (so rows 2-N stay aligned with the FORMAT line above).
-        //   Row 3+  — one row per ASSET LineType in the source CSV, with values
-        //             populated only for nominated columns (same sparse layout).
-        // Effect: identical to TemplateSimple1's structure, just with all the
-        // noisy non-nominated column names in row 2 stripped out.
+        //   Row 1   — verbatim CSV line 1 (the FORMAT line); typically only A1
+        //             carries content so the cell ends up in A1 either way.
+        //   Row 2   — only the nominated column names, COMPACTED into columns
+        //             A, B, C… (no gap columns, even if the original CSV had
+        //             non-nominated fields scattered between them).
+        //   Row 3+  — one row per ASSET LineType in the source CSV, values
+        //             aligned with row 2's compact positions.
+        // The output is narrow (≈ #nominated_fields + 1 columns).
         public string TemplateSimple0(string xlsxPath, string sheet)
         {
             var rows = ReadCsv(_csvPath);
@@ -286,12 +285,16 @@ namespace T1Sync
 
             int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
 
-            // Indices to retain in rows 2+: nominated columns + LineType
-            // (LineType is preserved so the output stays a valid CSV template).
-            var keepIndices = new HashSet<int>();
+            // Ordered list of CSV column indices to keep: LineType first, then
+            // nominated fields in their declared order. Output cell order
+            // follows this list (column 1 = LineType, column 2 = first nominated, …).
+            var keepIndices = new List<int>();
             if (lineTypeIdx >= 0) keepIndices.Add(lineTypeIdx);
             foreach (var f in _nominatedFields)
-                if (headerIndex.TryGetValue(f, out var idx)) keepIndices.Add(idx);
+            {
+                if (headerIndex.TryGetValue(f, out var idx) && !keepIndices.Contains(idx))
+                    keepIndices.Add(idx);
+            }
 
             // Filter to ASSET rows only.
             var assets = new List<List<string>>();
@@ -316,25 +319,30 @@ namespace T1Sync
             var sheetName = UniqueSheetName(wb, sheet);
             var ws = wb.Worksheets.Add(sheetName);
 
-            // Row 1 — verbatim original first row (FORMAT line).
+            // Row 1 — verbatim original first row. CSV line 1 normally only has
+            // content in cell A1 (the FORMAT string), so it lands in A1.
             for (int c = 0; c < formatLine.Count; c++)
                 if (!string.IsNullOrEmpty(formatLine[c]))
                     ws.Cell(1, c + 1).Value = formatLine[c];
 
-            // Row 2 — only the nominated column names, at their original CSV positions.
-            foreach (int c in keepIndices)
-                if (c < headerLine.Count && !string.IsNullOrEmpty(headerLine[c]))
-                    ws.Cell(2, c + 1).Value = headerLine[c];
+            // Row 2 — nominated column names, compacted into A, B, C…
+            for (int i = 0; i < keepIndices.Count; i++)
+            {
+                int srcIdx = keepIndices[i];
+                if (srcIdx < headerLine.Count && !string.IsNullOrEmpty(headerLine[srcIdx]))
+                    ws.Cell(2, i + 1).Value = headerLine[srcIdx];
+            }
 
-            // Row 3+ — ASSET data, only nominated columns.
+            // Row 3+ — ASSET data, same compacted positions as row 2.
             for (int r = 0; r < assets.Count; r++)
             {
                 var asset = assets[r];
                 int rowNum = 3 + r;
-                foreach (int c in keepIndices)
+                for (int i = 0; i < keepIndices.Count; i++)
                 {
-                    if (c < asset.Count && !string.IsNullOrEmpty(asset[c]))
-                        ws.Cell(rowNum, c + 1).Value = asset[c];
+                    int srcIdx = keepIndices[i];
+                    if (srcIdx < asset.Count && !string.IsNullOrEmpty(asset[srcIdx]))
+                        ws.Cell(rowNum, i + 1).Value = asset[srcIdx];
                 }
             }
 
