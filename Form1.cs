@@ -94,8 +94,8 @@ namespace T1Sync
         //   Sheet 4 ("Tree_Street Tree03") ← Simplify0    (row 1 full FORMAT, row 2 nominated cols only)
         private static void CsvDemo()
         {
-            const string csvSource = @"c:\temp\template_original.csv";
-            const string outXlsx   = @"c:\temp\template_s0.xlsx";
+            const string csvSource = @"c:\temp\flat_4_upload.csv";
+            const string outXlsx   = @"c:\temp\upload.csv";
             const string sheet     = "s0";
 
             if (File.Exists(outXlsx)) File.Delete(outXlsx);
@@ -104,7 +104,8 @@ namespace T1Sync
             //t.Template2FlatBrief(outXlsx, sheet);
             //t.Flat1(outXlsx, sheet);
             //t.Flat2(outXlsx, sheet);
-            t.Simplify0(outXlsx, sheet);
+            //t.Simplify0(outXlsx, sheet);            
+            t.Flat2Import(csvSource, outXlsx);
 
             Debug.WriteLine($"CSV → {outXlsx} (4 sheets)");
         }

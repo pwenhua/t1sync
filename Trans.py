@@ -422,6 +422,76 @@ class Trans:
         wb.save(path)
         return path
 
+    # ---------- flat2import (source CSV → well-formatted T1 import CSV) ----------
+    #
+    # Rules:
+    #   Row 1 — must start with "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT".
+    #           Prepended if the source CSV doesn't already start with it.
+    #   Row 2 — column header, with `AttributeCode` placed at Excel column EX
+    #           (the 154th column) and `SearchPath` at column EY (155th).
+    #           Source header is padded with empty cells if narrower.
+    #   Row 3+ — for each source data record (row a):
+    #              • write row a (padded to ≥ column EY)
+    #              • if its `Asset_Type` cell is non-empty and not "NULL",
+    #                emit an extra row b with col EX = "asset_type"
+    #                                       col EY = the row-a `Asset_Type` value
+
+    def flat2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
+        FORMAT_STR = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
+        EX_IDX = 153  # 0-based; column 154 (Excel column EX)
+        EY_IDX = 154  # 0-based; column 155 (Excel column EY)
+
+        with open(source_csv_path, "r", encoding="utf-8", newline="") as f:
+            rows = [row for row in csv.reader(f)]
+
+        has_format = bool(rows) and len(rows[0]) > 0 and rows[0][0] == FORMAT_STR
+        if has_format:
+            header_row = list(rows[1]) if len(rows) > 1 else []
+            data_rows = rows[2:]
+        else:
+            header_row = list(rows[0]) if rows else []
+            data_rows = rows[1:]
+
+        # Pad header to at least EY_IDX + 1 cells, set the two key column names.
+        while len(header_row) <= EY_IDX:
+            header_row.append("")
+        header_row[EX_IDX] = "AttributeCode"
+        header_row[EY_IDX] = "SearchPath"
+
+        # Locate Asset_Type column (case-insensitive).
+        asset_type_idx = -1
+        for i, name in enumerate(header_row):
+            if name and name.lower() == "asset_type":
+                asset_type_idx = i
+                break
+
+        out_rows: list[list[str]] = [
+            [FORMAT_STR],
+            header_row,
+        ]
+
+        for src_row in data_rows:
+            row_a = list(src_row)
+            while len(row_a) <= EY_IDX:
+                row_a.append("")
+            out_rows.append(row_a)
+
+            if 0 <= asset_type_idx < len(row_a):
+                val = row_a[asset_type_idx]
+                if val and val.upper() != "NULL":
+                    row_b = [""] * len(header_row)
+                    row_b[EX_IDX] = "asset_type"
+                    row_b[EY_IDX] = val
+                    out_rows.append(row_b)
+
+        path = Path(output_csv_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for row in out_rows:
+                writer.writerow(row)
+        return path
+
     # ---------- shared helpers (mirror MetaSchema / C# Trans privates) ----------
 
     @staticmethod

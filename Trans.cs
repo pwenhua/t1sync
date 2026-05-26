@@ -350,6 +350,105 @@ namespace T1Sync
             return xlsxPath;
         }
 
+        // ---------- Step 8: source CSV → well-formatted T1 import CSV ----------
+        //
+        // Rules:
+        //   Row 1 — must start with the literal FORMAT line
+        //           "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT".
+        //           If the source CSV already has it at row 1, keep it; otherwise
+        //           a fresh FORMAT row is prepended.
+        //   Row 2 — column header, with `AttributeCode` placed at Excel column EX
+        //           (the 154th column) and `SearchPath` at column EY (155th).
+        //           If the source header is narrower it's padded with empty cells.
+        //   Row 3+ — for each source data record (row a):
+        //              • write row a verbatim (padded to ≥ column EY)
+        //              • if the row's `Asset_Type` cell is non-empty and not "NULL",
+        //                emit an extra ATTRIBUTE row b right after row a with
+        //                    col EX = "asset_type"
+        //                    col EY = the row-a `Asset_Type` value
+        //                (column matching is case-insensitive on the header name).
+        public string Flat2Import(string sourceCsvPath, string outputCsvPath)
+        {
+            const string formatStr = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT";
+            const int    exIdx     = 153;  // 0-based; column 154; Excel column EX
+            const int    eyIdx     = 154;  // 0-based; column 155; Excel column EY
+
+            var rows = ReadCsv(sourceCsvPath);
+
+            bool hasFormat = rows.Count > 0 && rows[0].Count > 0 && rows[0][0] == formatStr;
+            var headerRow = hasFormat
+                ? (rows.Count > 1 ? new List<string>(rows[1]) : new List<string>())
+                : (rows.Count > 0 ? new List<string>(rows[0]) : new List<string>());
+            var dataRows = hasFormat
+                ? rows.Skip(2).ToList()
+                : rows.Skip(1).ToList();
+
+            // Pad header to at least eyIdx + 1 cells and place the two key column names.
+            while (headerRow.Count <= eyIdx) headerRow.Add("");
+            headerRow[exIdx] = "AttributeCode";
+            headerRow[eyIdx] = "SearchPath";
+
+            // Locate Asset_Type column in the (possibly padded) header — case-insensitive.
+            int assetTypeIdx = -1;
+            for (int i = 0; i < headerRow.Count; i++)
+            {
+                if (string.Equals(headerRow[i], "Asset_Type", StringComparison.OrdinalIgnoreCase))
+                {
+                    assetTypeIdx = i;
+                    break;
+                }
+            }
+
+            var outRows = new List<List<string>>
+            {
+                new List<string> { formatStr },
+                headerRow,
+            };
+
+            foreach (var srcRow in dataRows)
+            {
+                var rowA = new List<string>(srcRow);
+                while (rowA.Count <= eyIdx) rowA.Add("");
+                outRows.Add(rowA);
+
+                if (assetTypeIdx >= 0 && assetTypeIdx < rowA.Count)
+                {
+                    var val = rowA[assetTypeIdx];
+                    if (!string.IsNullOrEmpty(val) &&
+                        !string.Equals(val, "NULL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rowB = new List<string>(new string[headerRow.Count]);
+                        for (int i = 0; i < rowB.Count; i++) rowB[i] = "";
+                        rowB[exIdx] = "asset_type";
+                        rowB[eyIdx] = val;
+                        outRows.Add(rowB);
+                    }
+                }
+            }
+
+            var dir = Path.GetDirectoryName(outputCsvPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var sw = new StreamWriter(outputCsvPath, false, Encoding.UTF8);
+            foreach (var row in outRows)
+                sw.WriteLine(EscapeCsvRow(row));
+
+            return outputCsvPath;
+        }
+
+        // Minimal CSV escaper: wrap field in double quotes if it contains
+        // a comma, double quote, or newline; double up internal quotes.
+        private static string EscapeCsvRow(IEnumerable<string> fields)
+        {
+            return string.Join(",", fields.Select(f =>
+            {
+                if (f == null) return "";
+                if (f.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0)
+                    return "\"" + f.Replace("\"", "\"\"") + "\"";
+                return f;
+            }));
+        }
+
         // ---------- Step 6: CSV → ultra-compact flat Excel (nominated fields only) ----------
         //
         // Even simpler than Flat1: the output has ONLY the nominated
