@@ -452,7 +452,7 @@ namespace T1Sync
         // ------- Local copies of the private helpers from T1Client_Interop (so this file is self-contained) -------
 
         // Thin pass-through to the shared MetaSchema.BuildColumns helper —
-        // guarantees byte-identical column layout to T1Client_Interop / CsvTransformer.
+        // guarantees byte-identical column layout to T1Client_Interop / Trans.
         private static List<(string, string, string, string, string, string)> BuildMetaColumnsLocal(object nodeMetaObj)
         {
             var typed = MetaSchema.BuildColumns(nodeMetaObj);

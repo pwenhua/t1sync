@@ -1,4 +1,4 @@
-// CsvTransformer.cs — read a T1 ASSET CSV export and produce the same meta
+// Trans.cs — read a T1 ASSET CSV export and produce the same meta
 // shape as workshop-TP.json (built by T1Client.ParseAssetsMeta), then save
 // it to an Excel workbook the same way T1Client.SaveMetaToExcel does.
 //
@@ -31,7 +31,7 @@
 // attribute, ready for the user to fill in.
 //
 // Usage:
-//   var t = new CsvTransformer("ASSET_Export_25052026-011611.csv",
+//   var t = new Trans("ASSET_Export_25052026-011611.csv",
 //                              "AssetRegisterName", "AssetNumber", "Description",
 //                              "ShortDescription", "Status", "OperatingStatus");
 //   var meta = t.ParseMeta();
@@ -49,28 +49,28 @@ using ClosedXML.Excel;
 
 namespace T1Sync
 {
-    public class CsvTransformer
+    public class Trans
     {
         private readonly string _csvPath;
         private readonly List<string> _nominatedFields = new();
 
-        public CsvTransformer(string csvPath, params string[] nominatedFields)
+        public Trans(string csvPath, params string[] nominatedFields)
         {
             _csvPath = csvPath;
             if (nominatedFields != null) _nominatedFields.AddRange(nominatedFields);
         }
 
         /// <summary>
-        /// Build a CsvTransformer with `nominated_fields` loaded from the
+        /// Build a Trans with `nominated_fields` loaded from the
         /// top-level `nominated_fields` array in config.json. Shared across
         /// services — no service parameter required.
         /// </summary>
-        public static CsvTransformer FromConfig(
+        public static Trans FromConfig(
             string csvPath,
             string configPath = T1Client_Interop.DefaultConfigPath)
         {
             var fields = LoadNominatedFromConfig(configPath);
-            return new CsvTransformer(csvPath, fields.ToArray());
+            return new Trans(csvPath, fields.ToArray());
         }
 
         private static List<string> LoadNominatedFromConfig(string configPath)
@@ -268,7 +268,7 @@ namespace T1Sync
         //   Row 3+  — one row per ASSET LineType in the source CSV, values
         //             aligned with row 2's compact positions.
         // The output is narrow (≈ #nominated_fields + 1 columns).
-        public string TemplateSimple0(string xlsxPath, string sheet)
+        public string Simplify0(string xlsxPath, string sheet)
         {
             var rows = ReadCsv(_csvPath);
             if (rows.Count < 2) return xlsxPath;
@@ -352,13 +352,13 @@ namespace T1Sync
 
         // ---------- Step 6: CSV → ultra-compact flat Excel (nominated fields only) ----------
         //
-        // Even simpler than TemplateSimple1: the output has ONLY the nominated
+        // Even simpler than Flat1: the output has ONLY the nominated
         // direct-field columns — no CSV-template padding, no T1Sync 6-row
         // header. Just one header row + one data row per ASSET.
         //
         //   Row 1   — nominated field names (e.g. AssetRegisterName, AssetNumber, …)
         //   Row 2+  — one row per ASSET LineType in the source CSV.
-        public string TemplateSimple2(string xlsxPath, string sheet)
+        public string Flat2(string xlsxPath, string sheet)
         {
             var rows = ReadCsv(_csvPath);
             if (rows.Count < 2) return xlsxPath;
@@ -434,7 +434,7 @@ namespace T1Sync
         //               Only the nominated direct-field columns are populated;
         //               every other column is left blank. ATTRIBUTE rows are
         //               dropped entirely.
-        public string TemplateSimple1(string xlsxPath, string sheet)
+        public string Flat1(string xlsxPath, string sheet)
         {
             var rows = ReadCsv(_csvPath);
             if (rows.Count < 2) return xlsxPath;

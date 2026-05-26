@@ -5,7 +5,7 @@ namespace T1Sync
     // Test harness for T1Sync. Demos that share variables are grouped into one
     // method; comment out lines inside a demo to skip individual operations.
     //   button1 ("T1WS")           → T1Client operations
-    //   button2 ("CsvTransformer") → CsvTransformer operations
+    //   button2 ("Trans") → Trans operations
     public partial class Form1 : Form
     {
         public Form1() => InitializeComponent();
@@ -17,7 +17,7 @@ namespace T1Sync
             T1ExcelDemo();
         }
 
-        // ===== button2 — CsvTransformer demos. =====
+        // ===== button2 — Trans demos. =====
         private void button2_Click(object sender, EventArgs e)
         {
             //CsvToMetaDemo();
@@ -69,7 +69,7 @@ namespace T1Sync
             T1ClientFactory.ExtractAsset(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance: "mcc");
         }
 
-        // ---------------- CsvTransformer demos ----------------
+        // ---------------- Trans demos ----------------
 
         private static void CsvToMetaDemo()
         {
@@ -79,7 +79,7 @@ namespace T1Sync
             const string metaXlsx  = @"c:\temp\csv-meta.xlsx";
 
             // nominated_fields comes from the top-level "nominated_fields" array in config.json.
-            var t = CsvTransformer.FromConfig(csvSource);
+            var t = Trans.FromConfig(csvSource);
             t.SaveMetaToJson(metaJson, nodeName);
             t.SaveMetaToExcel(metaXlsx, nodeName);
             Debug.WriteLine($"CSV → meta: {metaJson}  +  {metaXlsx}");
@@ -89,9 +89,9 @@ namespace T1Sync
         // into the SAME workbook, each as a separate sheet (UniqueSheetName
         // auto-appends "01", "02"… when a sheet with that base name exists).
         //   Sheet 1 ("Tree_Street Tree")   ← Template2FlatBrief (6-row header)
-        //   Sheet 2 ("Tree_Street Tree01") ← TemplateSimple1    (2-row CSV-shape)
-        //   Sheet 3 ("Tree_Street Tree02") ← TemplateSimple2    (1-row compact)
-        //   Sheet 4 ("Tree_Street Tree03") ← TemplateSimple0    (row 1 full FORMAT, row 2 nominated cols only)
+        //   Sheet 2 ("Tree_Street Tree01") ← Flat1    (2-row CSV-shape)
+        //   Sheet 3 ("Tree_Street Tree02") ← Flat2    (1-row compact)
+        //   Sheet 4 ("Tree_Street Tree03") ← Simplify0    (row 1 full FORMAT, row 2 nominated cols only)
         private static void CsvDemo()
         {
             const string csvSource = @"c:\temp\template_original.csv";
@@ -100,11 +100,11 @@ namespace T1Sync
 
             if (File.Exists(outXlsx)) File.Delete(outXlsx);
 
-            var t = CsvTransformer.FromConfig(csvSource);
+            var t = Trans.FromConfig(csvSource);
             //t.Template2FlatBrief(outXlsx, sheet);
-            //t.TemplateSimple1(outXlsx, sheet);
-            //t.TemplateSimple2(outXlsx, sheet);
-            t.TemplateSimple0(outXlsx, sheet);
+            //t.Flat1(outXlsx, sheet);
+            //t.Flat2(outXlsx, sheet);
+            t.Simplify0(outXlsx, sheet);
 
             Debug.WriteLine($"CSV → {outXlsx} (4 sheets)");
         }

@@ -2,7 +2,7 @@
 //
 // All three writers — T1Client_Interop.SaveMetaToExcel (Excel COM),
 // T1Client_ClosedXML.SaveMetaToExcel (ClosedXML), and
-// CsvTransformer.SaveMetaToExcel (ClosedXML) — call MetaSchema.BuildColumns
+// Trans.SaveMetaToExcel (ClosedXML) — call MetaSchema.BuildColumns
 // to turn the hierarchical node-meta JSON into a sequence of column tuples,
 // then write them with their own library's cell API. Sharing this code
 // guarantees the row/column structure of the output is byte-identical

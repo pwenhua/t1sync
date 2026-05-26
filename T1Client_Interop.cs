@@ -42,7 +42,7 @@ namespace T1Sync
             @"^(AttributeItem(?:Userfield|SelectionType)\d+)_META_$",
             RegexOptions.Compiled);
 
-        // Shared with T1Client_ClosedXML / CsvTransformer — loaded once from
+        // Shared with T1Client_ClosedXML / Trans — loaded once from
         // config.json's top-level "nominated_fields" array at type-init time.
         // Falls back to the original hardcoded list if config.json is unreadable
         // or doesn't contain the array.
