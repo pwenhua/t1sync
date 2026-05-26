@@ -94,16 +94,16 @@ namespace T1Sync
         //   Sheet 4 ("Tree_Street Tree03") ← TemplateSimple0    (row 1 full FORMAT, row 2 nominated cols only)
         private static void CsvDemo()
         {
-            const string csvSource = "ASSET_Export_25052026-011611.csv";
-            const string outXlsx   = @"c:\temp\csv-demo.xlsx";
-            const string sheet     = "Tree/Street Tree";
+            const string csvSource = @"c:\temp\template_original.csv";
+            const string outXlsx   = @"c:\temp\template_s0.xlsx";
+            const string sheet     = "s0";
 
             if (File.Exists(outXlsx)) File.Delete(outXlsx);
 
             var t = CsvTransformer.FromConfig(csvSource);
-            t.Template2FlatBrief(outXlsx, sheet);
-            t.TemplateSimple1(outXlsx, sheet);
-            t.TemplateSimple2(outXlsx, sheet);
+            //t.Template2FlatBrief(outXlsx, sheet);
+            //t.TemplateSimple1(outXlsx, sheet);
+            //t.TemplateSimple2(outXlsx, sheet);
             t.TemplateSimple0(outXlsx, sheet);
 
             Debug.WriteLine($"CSV → {outXlsx} (4 sheets)");
