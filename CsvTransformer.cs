@@ -257,17 +257,26 @@ namespace T1Sync
         //
         // Header layout is the same 6-row scheme T1Client uses, so the output
         // is consumable by extract_asset / sync_asset_from_excel unchanged.
-        // ---------- Step 7: CSV → bare-bones data (no header at all) ----------
+        // ---------- Step 7: CSV → cleaned template (nominated columns visible only) ----------
         //
-        // The simplest possible output: ATTRIBUTE rows dropped, only the
-        // nominated direct-field columns kept, NO header row. Row 1 onwards
-        // is data — one row per ASSET LineType in the source CSV.
+        // Output layout:
+        //   Row 1   — verbatim CSV line 1 (the FORMAT line — kept as-is so the
+        //             output stays recognisable as a T1 ASSET template).
+        //   Row 2   — only the nominated column names, written at their ORIGINAL
+        //             CSV column positions. Non-nominated columns are left blank
+        //             (so rows 2-N stay aligned with the FORMAT line above).
+        //   Row 3+  — one row per ASSET LineType in the source CSV, with values
+        //             populated only for nominated columns (same sparse layout).
+        // Effect: identical to TemplateSimple1's structure, just with all the
+        // noisy non-nominated column names in row 2 stripped out.
         public string TemplateSimple0(string xlsxPath, string sheet)
         {
             var rows = ReadCsv(_csvPath);
             if (rows.Count < 2) return xlsxPath;
 
-            var headerLine = rows[1];
+            var formatLine = rows[0];   // CSV line 1
+            var headerLine = rows[1];   // CSV line 2 — full column header
+
             var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < headerLine.Count; i++)
             {
@@ -277,6 +286,14 @@ namespace T1Sync
 
             int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
 
+            // Indices to retain in rows 2+: nominated columns + LineType
+            // (LineType is preserved so the output stays a valid CSV template).
+            var keepIndices = new HashSet<int>();
+            if (lineTypeIdx >= 0) keepIndices.Add(lineTypeIdx);
+            foreach (var f in _nominatedFields)
+                if (headerIndex.TryGetValue(f, out var idx)) keepIndices.Add(idx);
+
+            // Filter to ASSET rows only.
             var assets = new List<List<string>>();
             if (lineTypeIdx >= 0)
             {
@@ -299,24 +316,25 @@ namespace T1Sync
             var sheetName = UniqueSheetName(wb, sheet);
             var ws = wb.Worksheets.Add(sheetName);
 
-            // Text format on every column so values like "0100038" keep their
-            // leading zeros (there's no row-5 dataType row to drive formatting).
-            for (int i = 0; i < _nominatedFields.Count; i++)
-                ws.Column(i + 1).Style.NumberFormat.Format = "@";
+            // Row 1 — verbatim original first row (FORMAT line).
+            for (int c = 0; c < formatLine.Count; c++)
+                if (!string.IsNullOrEmpty(formatLine[c]))
+                    ws.Cell(1, c + 1).Value = formatLine[c];
 
-            // Row 1+: ASSET data only — no header row.
+            // Row 2 — only the nominated column names, at their original CSV positions.
+            foreach (int c in keepIndices)
+                if (c < headerLine.Count && !string.IsNullOrEmpty(headerLine[c]))
+                    ws.Cell(2, c + 1).Value = headerLine[c];
+
+            // Row 3+ — ASSET data, only nominated columns.
             for (int r = 0; r < assets.Count; r++)
             {
                 var asset = assets[r];
-                int rowNum = 1 + r;
-                for (int i = 0; i < _nominatedFields.Count; i++)
+                int rowNum = 3 + r;
+                foreach (int c in keepIndices)
                 {
-                    var f = _nominatedFields[i];
-                    if (headerIndex.TryGetValue(f, out var idx) &&
-                        idx < asset.Count && !string.IsNullOrEmpty(asset[idx]))
-                    {
-                        ws.Cell(rowNum, i + 1).Value = asset[idx];
-                    }
+                    if (c < asset.Count && !string.IsNullOrEmpty(asset[c]))
+                        ws.Cell(rowNum, c + 1).Value = asset[c];
                 }
             }
 

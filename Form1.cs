@@ -91,7 +91,7 @@ namespace T1Sync
         //   Sheet 1 ("Tree_Street Tree")   ← Template2FlatBrief (6-row header)
         //   Sheet 2 ("Tree_Street Tree01") ← TemplateSimple1    (2-row CSV-shape)
         //   Sheet 3 ("Tree_Street Tree02") ← TemplateSimple2    (1-row compact)
-        //   Sheet 4 ("Tree_Street Tree03") ← TemplateSimple0    (no header, data only)
+        //   Sheet 4 ("Tree_Street Tree03") ← TemplateSimple0    (row 1 full FORMAT, row 2 nominated cols only)
         private static void CsvDemo()
         {
             const string csvSource = "ASSET_Export_25052026-011611.csv";
