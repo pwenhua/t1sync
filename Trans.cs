@@ -383,12 +383,8 @@ namespace T1Sync
                 ? rows.Skip(2).ToList()
                 : rows.Skip(1).ToList();
 
-            // Pad header to at least eyIdx + 1 cells and place the two key column names.
-            while (headerRow.Count <= eyIdx) headerRow.Add("");
-            headerRow[exIdx] = "AttributeCode";
-            headerRow[eyIdx] = "SearchPath";
-
-            // Locate Asset_Type column in the (possibly padded) header — case-insensitive.
+            // Locate Asset_Type column in the source header (case-insensitive)
+            // BEFORE any padding so the index points at the real source column.
             int assetTypeIdx = -1;
             for (int i = 0; i < headerRow.Count; i++)
             {
@@ -399,6 +395,14 @@ namespace T1Sync
                 }
             }
 
+            // Drop the Asset_Type column from the header (its value moves to row b).
+            if (assetTypeIdx >= 0) headerRow.RemoveAt(assetTypeIdx);
+
+            // Pad header to at least eyIdx + 1 cells and place the two key column names.
+            while (headerRow.Count <= eyIdx) headerRow.Add("");
+            headerRow[exIdx] = "AttributeCode";
+            headerRow[eyIdx] = "SearchPath";
+
             var outRows = new List<List<string>>
             {
                 new List<string> { formatStr },
@@ -407,22 +411,26 @@ namespace T1Sync
 
             foreach (var srcRow in dataRows)
             {
+                // Capture Asset_Type value BEFORE removing the cell from the row.
+                string assetTypeVal = (assetTypeIdx >= 0 && assetTypeIdx < srcRow.Count)
+                    ? srcRow[assetTypeIdx] : "";
+
+                // Build row a: copy source row, drop the Asset_Type cell.
                 var rowA = new List<string>(srcRow);
+                if (assetTypeIdx >= 0 && assetTypeIdx < rowA.Count) rowA.RemoveAt(assetTypeIdx);
                 while (rowA.Count <= eyIdx) rowA.Add("");
                 outRows.Add(rowA);
 
-                if (assetTypeIdx >= 0 && assetTypeIdx < rowA.Count)
+                // Row b: only when Asset_Type was populated (skip empty / "NULL").
+                if (!string.IsNullOrEmpty(assetTypeVal) &&
+                    !string.Equals(assetTypeVal, "NULL", StringComparison.OrdinalIgnoreCase))
                 {
-                    var val = rowA[assetTypeIdx];
-                    if (!string.IsNullOrEmpty(val) &&
-                        !string.Equals(val, "NULL", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var rowB = new List<string>(new string[headerRow.Count]);
-                        for (int i = 0; i < rowB.Count; i++) rowB[i] = "";
-                        rowB[exIdx] = "asset_type";
-                        rowB[eyIdx] = val;
-                        outRows.Add(rowB);
-                    }
+                    var rowB = new List<string>(new string[headerRow.Count]);
+                    for (int i = 0; i < rowB.Count; i++) rowB[i] = "";
+                    rowB[0]      = "ATTRIBUTE";
+                    rowB[exIdx]  = "asset_type";
+                    rowB[eyIdx]  = assetTypeVal;
+                    outRows.Add(rowB);
                 }
             }
 

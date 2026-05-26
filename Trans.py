@@ -452,18 +452,23 @@ class Trans:
             header_row = list(rows[0]) if rows else []
             data_rows = rows[1:]
 
-        # Pad header to at least EY_IDX + 1 cells, set the two key column names.
-        while len(header_row) <= EY_IDX:
-            header_row.append("")
-        header_row[EX_IDX] = "AttributeCode"
-        header_row[EY_IDX] = "SearchPath"
-
-        # Locate Asset_Type column (case-insensitive).
+        # Locate Asset_Type column in the SOURCE header (case-insensitive)
+        # BEFORE any padding so the index points at the real source column.
         asset_type_idx = -1
         for i, name in enumerate(header_row):
             if name and name.lower() == "asset_type":
                 asset_type_idx = i
                 break
+
+        # Drop the Asset_Type column from the header (its value moves to row b).
+        if asset_type_idx >= 0:
+            header_row.pop(asset_type_idx)
+
+        # Pad header to at least EY_IDX + 1 cells, set the two key column names.
+        while len(header_row) <= EY_IDX:
+            header_row.append("")
+        header_row[EX_IDX] = "AttributeCode"
+        header_row[EY_IDX] = "SearchPath"
 
         out_rows: list[list[str]] = [
             [FORMAT_STR],
@@ -471,18 +476,26 @@ class Trans:
         ]
 
         for src_row in data_rows:
+            # Capture Asset_Type value BEFORE removing it from the row.
+            val = ""
+            if 0 <= asset_type_idx < len(src_row):
+                val = src_row[asset_type_idx]
+
+            # Build row a: copy source row, drop the Asset_Type cell.
             row_a = list(src_row)
+            if 0 <= asset_type_idx < len(row_a):
+                row_a.pop(asset_type_idx)
             while len(row_a) <= EY_IDX:
                 row_a.append("")
             out_rows.append(row_a)
 
-            if 0 <= asset_type_idx < len(row_a):
-                val = row_a[asset_type_idx]
-                if val and val.upper() != "NULL":
-                    row_b = [""] * len(header_row)
-                    row_b[EX_IDX] = "asset_type"
-                    row_b[EY_IDX] = val
-                    out_rows.append(row_b)
+            # Row b: only when Asset_Type was populated (skip empty / "NULL").
+            if val and val.upper() != "NULL":
+                row_b = [""] * len(header_row)
+                row_b[0]      = "ATTRIBUTE"
+                row_b[EX_IDX] = "asset_type"
+                row_b[EY_IDX] = val
+                out_rows.append(row_b)
 
         path = Path(output_csv_path)
         path.parent.mkdir(parents=True, exist_ok=True)
