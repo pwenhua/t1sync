@@ -4,13 +4,9 @@
 #   - parse_meta()            → hierarchical meta dict (same shape as T1Client.parse_assetitem_meta)
 #   - save_meta_to_json(...)  → write the meta dict to a JSON file
 #   - save_meta_to_excel(...) → write the meta as a 6-row-header workbook sheet
-#   - template2_flat_brief()  → T1Sync 6-row header + brief data (one row per asset)
-#   - simplify0()             → row 1 = CSV FORMAT verbatim; row 2 = nominated col
-#                               names compacted; row 3+ = ASSET data compacted
-#   - flat1()                 → rows 1-2 = CSV header verbatim (~290 cols);
-#                               row 3+ = ASSET data populated only in nominated cells
-#   - flat2()                 → row 1 = nominated names; row 2+ = ASSET data
-#                               (ultra-compact, no CSV decoration)
+#   - template2_flat()        → T1Sync 6-row header + flat data (one row per asset)
+#                                 optional asset_type_only=True drops every attribute
+#                                 column except ASSET_TYPE
 
 from __future__ import annotations
 
@@ -189,9 +185,13 @@ class Trans:
         wb.save(path)
         return path
 
-    # ---------- template2_flat_brief (T1Sync 6-row header + brief data per asset) ----------
+    # ---------- template2_flat (T1Sync 6-row header + flat data per asset) ----------
 
-    def template2_flat_brief(self, xlsx_path: str | Path, sheet: str) -> Path:
+    def template2_flat(self, xlsx_path: str | Path, sheet: str,
+                       asset_type_only: bool = False) -> Path:
+        """When asset_type_only=True, drop every AttributeCode column except
+        ASSET_TYPE (matched case-insensitively). Default False keeps every
+        distinct AttributeCode in the source as its own column."""
         from openpyxl import Workbook, load_workbook
         from openpyxl.utils import get_column_letter
 
@@ -235,6 +235,10 @@ class Trans:
                     seen.add(code)
                     attr_codes_ordered.append(code)
 
+        if asset_type_only:
+            attr_codes_ordered = [c for c in attr_codes_ordered
+                                  if c.lower() == "asset_type"]
+
         path = Path(xlsx_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         wb = load_workbook(path) if path.exists() else Workbook()
@@ -253,13 +257,16 @@ class Trans:
                 header = str(ws.cell(row=6, column=c).value or "")
                 layout.append((kind, level, header))
         else:
-            # Fresh sheet — brief layout: nominated fields + AttributeCode scalars.
+            # Fresh sheet — brief layout. AttributeCode columns lead (one per
+            # distinct code from ATTRIBUTE rows, regardless of LevelNumber);
+            # the nominated direct fields follow, with AssetRegisterName and
+            # AssetNumber forced to the front.
             ws = wb.create_sheet(sheet_name)
             brief_cols = []
-            for f in self._nominated_fields:
-                brief_cols.append(("", "", "", "", "A", f))
             for code in attr_codes_ordered:
                 brief_cols.append(("Attribute", "", "", "", "A", code))
+            for f in self._order_nominated_fields(self._nominated_fields):
+                brief_cols.append(("", "", "", "", "A", f))
             for i, c in enumerate(brief_cols, start=1):
                 kind, code, level, suffix, dt, header = c
                 ws.cell(row=1, column=i, value=kind)
@@ -285,142 +292,70 @@ class Trans:
         wb.save(path)
         return path
 
-    # ---------- simplify0 (row 1 full FORMAT, row 2 nominated compacted) ----------
+    # ---------- highlight_leaf (yellow-fill leaf rows in asset_type column) ----------
+    #
+    # Opens an existing Template2Flat workbook, finds the asset_type column by
+    # scanning row 6 (the header row, case-insensitive), then yellow-fills every
+    # data-row cell whose value is a leaf in the hierarchical path.
+    #
+    # A value V is a "leaf" if no other value in the column extends it with a
+    # path separator (so neither V + '\\' + … nor V + '/' + … appears). Given
+    #   Tree
+    #   Tree\Street Tree
+    #   Tree\Street Tree\Example Tree
+    # only the third row is highlighted.
 
-    def simplify0(self, xlsx_path: str | Path, sheet: str) -> Path:
-        from openpyxl import Workbook, load_workbook
-
-        rows = self._read_csv()
-        if len(rows) < 2:
-            return Path(xlsx_path)
-        format_line = rows[0]
-        header_line = rows[1]
-        hi = self._header_idx(header_line)
-        line_type_idx = hi.get("LineType", -1)
-
-        keep_indices: list[int] = []
-        if line_type_idx >= 0:
-            keep_indices.append(line_type_idx)
-        for f in self._nominated_fields:
-            if f in hi and hi[f] not in keep_indices:
-                keep_indices.append(hi[f])
-
-        assets = self._asset_rows(rows, line_type_idx)
+    def highlight_leaf(self, xlsx_path: str | Path, sheet: str) -> Path:
+        from openpyxl import load_workbook
+        from openpyxl.styles import PatternFill
 
         path = Path(xlsx_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        wb = load_workbook(path) if path.exists() else Workbook()
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-        sheet_name = self._unique_sheet_name(wb, sheet)
-        ws = wb.create_sheet(sheet_name)
+        wb = load_workbook(path)
+        sheet_name = self._sanitize_sheet_name(sheet)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"Sheet {sheet_name!r} not found in {path}")
+        ws = wb[sheet_name]
 
-        # Row 1 — verbatim CSV line 1 (FORMAT line; typically only A1 has content).
-        for c, val in enumerate(format_line, start=1):
-            if val:
-                ws.cell(row=1, column=c, value=val)
+        col_idx = -1
+        for c in range(1, ws.max_column + 1):
+            h = ws.cell(row=6, column=c).value
+            if h and str(h).lower() == "asset_type":
+                col_idx = c
+                break
+        if col_idx < 0:
+            return path
 
-        # Row 2 — nominated col names, compacted into A, B, C…
-        for i, src_idx in enumerate(keep_indices, start=1):
-            if src_idx < len(header_line) and header_line[src_idx]:
-                ws.cell(row=2, column=i, value=header_line[src_idx])
+        if ws.max_row < 7:
+            wb.save(path)
+            return path
 
-        # Row 3+ — ASSET data at the same compacted positions.
-        for r, asset in enumerate(assets):
-            for i, src_idx in enumerate(keep_indices, start=1):
-                if src_idx < len(asset) and asset[src_idx]:
-                    ws.cell(row=3 + r, column=i, value=asset[src_idx])
+        row_values: list[tuple[int, str]] = []
+        for r in range(7, ws.max_row + 1):
+            v = ws.cell(row=r, column=col_idx).value
+            if v:
+                row_values.append((r, str(v)))
+
+        all_lower = {v.lower() for _, v in row_values}
+        yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+        for r, v in row_values:
+            if self._is_leaf_path(v, all_lower):
+                ws.cell(row=r, column=col_idx).fill = yellow
 
         wb.save(path)
         return path
 
-    # ---------- flat1 (verbatim CSV header rows 1-2 + sparse ASSET data) ----------
-
-    def flat1(self, xlsx_path: str | Path, sheet: str) -> Path:
-        from openpyxl import Workbook, load_workbook
-
-        rows = self._read_csv()
-        if len(rows) < 2:
-            return Path(xlsx_path)
-        format_line = rows[0]
-        header_line = rows[1]
-        hi = self._header_idx(header_line)
-        line_type_idx = hi.get("LineType", -1)
-
-        keep_indices: set[int] = set()
-        if line_type_idx >= 0:
-            keep_indices.add(line_type_idx)
-        for f in self._nominated_fields:
-            if f in hi:
-                keep_indices.add(hi[f])
-
-        assets = self._asset_rows(rows, line_type_idx)
-
-        path = Path(xlsx_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        wb = load_workbook(path) if path.exists() else Workbook()
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-        sheet_name = self._unique_sheet_name(wb, sheet)
-        ws = wb.create_sheet(sheet_name)
-
-        # Row 1 — verbatim CSV line 1.
-        for c, val in enumerate(format_line, start=1):
-            if val:
-                ws.cell(row=1, column=c, value=val)
-
-        # Row 2 — verbatim CSV line 2 (full column header, all ~290 columns).
-        for c, val in enumerate(header_line, start=1):
-            if val:
-                ws.cell(row=2, column=c, value=val)
-
-        # Row 3+ — ASSET data, only nominated cells populated at their original CSV positions.
-        for r, asset in enumerate(assets):
-            for c in keep_indices:
-                if c < len(asset) and asset[c]:
-                    ws.cell(row=3 + r, column=c + 1, value=asset[c])
-
-        wb.save(path)
-        return path
-
-    # ---------- flat2 (1-row plain header + compact ASSET data) ----------
-
-    def flat2(self, xlsx_path: str | Path, sheet: str) -> Path:
-        from openpyxl import Workbook, load_workbook
-        from openpyxl.utils import get_column_letter
-
-        rows = self._read_csv()
-        if len(rows) < 2:
-            return Path(xlsx_path)
-        header_line = rows[1]
-        hi = self._header_idx(header_line)
-        line_type_idx = hi.get("LineType", -1)
-        assets = self._asset_rows(rows, line_type_idx)
-
-        path = Path(xlsx_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        wb = load_workbook(path) if path.exists() else Workbook()
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-        sheet_name = self._unique_sheet_name(wb, sheet)
-        ws = wb.create_sheet(sheet_name)
-
-        # Row 1 — just the nominated field names. Columns formatted as text so
-        # values like "0100038" keep their leading zeros.
-        for i, f in enumerate(self._nominated_fields, start=1):
-            ws.cell(row=1, column=i, value=f)
-            ws.column_dimensions[get_column_letter(i)].number_format = "@"
-
-        # Row 2+ — one row per asset.
-        for r, asset in enumerate(assets):
-            for i, f in enumerate(self._nominated_fields, start=1):
-                if f in hi:
-                    idx = hi[f]
-                    if idx < len(asset) and asset[idx]:
-                        ws.cell(row=2 + r, column=i, value=asset[idx])
-
-        wb.save(path)
-        return path
+    @staticmethod
+    def _is_leaf_path(value: str, all_lower: set[str]) -> bool:
+        v = value.lower()
+        for other in all_lower:
+            if len(other) <= len(v):
+                continue
+            if not other.startswith(v):
+                continue
+            if other[len(v)] in ("\\", "/"):
+                return False
+        return True
 
     # ---------- flat2import (source CSV → well-formatted T1 import CSV) ----------
     #
@@ -431,10 +366,16 @@ class Trans:
     #           (the 154th column) and `SearchPath` at column EY (155th).
     #           Source header is padded with empty cells if narrower.
     #   Row 3+ — for each source data record (row a):
-    #              • write row a (padded to ≥ column EY)
-    #              • if its `Asset_Type` cell is non-empty and not "NULL",
-    #                emit an extra row b with col EX = "asset_type"
-    #                                       col EY = the row-a `Asset_Type` value
+    #              • write row a verbatim (with the leading attribute columns
+    #                stripped, padded to ≥ column EY)
+    #              • for every "leading attribute column" (any source column
+    #                appearing BEFORE `AssetRegisterName` in the header) whose
+    #                row-a cell is non-empty and not "NULL", emit an extra
+    #                ATTRIBUTE row b with
+    #                    col 0  = "ATTRIBUTE"
+    #                    col EX = the leading column's header name
+    #                    col EY = the row-a value for that column
+    #            Column matching is case-insensitive.
 
     def flat2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
         FORMAT_STR = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
@@ -452,19 +393,20 @@ class Trans:
             header_row = list(rows[0]) if rows else []
             data_rows = rows[1:]
 
-        # Locate Asset_Type column in the SOURCE header (case-insensitive)
-        # BEFORE any padding so the index points at the real source column.
-        asset_type_idx = -1
+        # Boundary = index of AssetRegisterName in the source header
+        # (case-insensitive). Everything before it is a "leading attribute
+        # column"; its value becomes an extra ATTRIBUTE row per asset.
+        boundary = 0
         for i, name in enumerate(header_row):
-            if name and name.lower() == "asset_type":
-                asset_type_idx = i
+            if name and name.lower() == "assetregistername":
+                boundary = i
                 break
 
-        # Drop the Asset_Type column from the header (its value moves to row b).
-        if asset_type_idx >= 0:
-            header_row.pop(asset_type_idx)
+        leading_names = list(header_row[:boundary])
 
-        # Pad header to at least EY_IDX + 1 cells, set the two key column names.
+        # Drop leading cols, pad to ≥ EY_IDX + 1, place key column names.
+        if boundary > 0:
+            del header_row[:boundary]
         while len(header_row) <= EY_IDX:
             header_row.append("")
         header_row[EX_IDX] = "AttributeCode"
@@ -476,25 +418,26 @@ class Trans:
         ]
 
         for src_row in data_rows:
-            # Capture Asset_Type value BEFORE removing it from the row.
-            val = ""
-            if 0 <= asset_type_idx < len(src_row):
-                val = src_row[asset_type_idx]
+            # Snapshot leading values BEFORE removing them from row a.
+            leading_vals = [src_row[i] if i < len(src_row) else "" for i in range(boundary)]
 
-            # Build row a: copy source row, drop the Asset_Type cell.
+            # Row a: source row with the leading cells dropped, padded to ≥ EY.
             row_a = list(src_row)
-            if 0 <= asset_type_idx < len(row_a):
-                row_a.pop(asset_type_idx)
+            if boundary > 0:
+                del row_a[:min(boundary, len(row_a))]
             while len(row_a) <= EY_IDX:
                 row_a.append("")
             out_rows.append(row_a)
 
-            # Row b: only when Asset_Type was populated (skip empty / "NULL").
-            if val and val.upper() != "NULL":
+            # One row b per non-empty (non-"NULL") leading cell.
+            for j, name in enumerate(leading_names):
+                v = leading_vals[j]
+                if not v or v.upper() == "NULL":
+                    continue
                 row_b = [""] * len(header_row)
                 row_b[0]      = "ATTRIBUTE"
-                row_b[EX_IDX] = "asset_type"
-                row_b[EY_IDX] = val
+                row_b[EX_IDX] = name
+                row_b[EY_IDX] = v
                 out_rows.append(row_b)
 
         path = Path(output_csv_path)
@@ -506,6 +449,25 @@ class Trans:
         return path
 
     # ---------- shared helpers (mirror MetaSchema / C# Trans privates) ----------
+
+    @staticmethod
+    def _order_nominated_fields(nominated: list[str]) -> list[str]:
+        """Promote AssetRegisterName and AssetNumber to the front of the
+        nominated direct-field list; preserve original order for the rest."""
+        leading = ("assetregistername", "assetnumber")
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for want in leading:
+            for f in nominated:
+                if f.lower() == want and f.lower() not in seen:
+                    ordered.append(f)
+                    seen.add(f.lower())
+                    break
+        for f in nominated:
+            if f.lower() not in seen:
+                ordered.append(f)
+                seen.add(f.lower())
+        return ordered
 
     @staticmethod
     def _build_meta_columns(node_meta: dict) -> list[tuple]:

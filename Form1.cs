@@ -85,29 +85,26 @@ namespace T1Sync
             Debug.WriteLine($"CSV → meta: {metaJson}  +  {metaXlsx}");
         }
 
-        // Runs all four CSV → Excel transforms in one click. They all write
-        // into the SAME workbook, each as a separate sheet (UniqueSheetName
-        // auto-appends "01", "02"… when a sheet with that base name exists).
-        //   Sheet 1 ("Tree_Street Tree")   ← Template2FlatBrief (6-row header)
-        //   Sheet 2 ("Tree_Street Tree01") ← Flat1    (2-row CSV-shape)
-        //   Sheet 3 ("Tree_Street Tree02") ← Flat2    (1-row compact)
-        //   Sheet 4 ("Tree_Street Tree03") ← Simplify0    (row 1 full FORMAT, row 2 nominated cols only)
+        // CSV → Excel transform via Template2Flat (6-row header, every AttributeCode
+        // → its own column). Pass assetTypeOnly: true to keep only the ASSET_TYPE
+        // attribute column. Flat2Import is the CSV → CSV variant.
         private static void CsvDemo()
         {
             const string csvSource = @"c:\temp\flat_4_upload.csv";
-            const string outXlsx   = @"c:\temp\upload.csv";
+            const string outXlsx   = @"c:\temp\upload.xlsx";
+            const string outCsv    = @"c:\temp\upload.csv";
             const string sheet     = "s0";
 
             if (File.Exists(outXlsx)) File.Delete(outXlsx);
+            if (File.Exists(outCsv))  File.Delete(outCsv);
 
             var t = Trans.FromConfig(csvSource);
-            //t.Template2FlatBrief(outXlsx, sheet);
-            //t.Flat1(outXlsx, sheet);
-            //t.Flat2(outXlsx, sheet);
-            //t.Simplify0(outXlsx, sheet);            
-            t.Flat2Import(csvSource, outXlsx);
+            t.Template2Flat(outXlsx, sheet);
+            //t.Template2Flat(outXlsx, sheet, assetTypeOnly: true);
+            t.HighlightLeaf(outXlsx, sheet);
+            //t.Flat2Import(csvSource, outCsv);
 
-            Debug.WriteLine($"CSV → {outXlsx} (4 sheets)");
+            Debug.WriteLine($"CSV → {outXlsx}");
         }
     }
 }

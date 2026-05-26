@@ -245,7 +245,7 @@ namespace T1Sync
         // ---------- Step 4: CSV (template) → flat brief Excel ----------
         //
         // SaveMetaToExcel produces a metadata-only workbook (6 header rows + no
-        // data). Template2FlatBrief produces a data workbook:
+        // data). Template2Flat produces a data workbook:
         //   • The CSV is a "template" — one logical asset spans many CSV rows:
         //       one ASSET line + 0..N following ATTRIBUTE lines.
         //   • The output is "flat" — one row per asset, one column per
@@ -257,100 +257,7 @@ namespace T1Sync
         //
         // Header layout is the same 6-row scheme T1Client uses, so the output
         // is consumable by extract_asset / sync_asset_from_excel unchanged.
-        // ---------- Step 7: CSV → cleaned template (nominated columns, compacted) ----------
-        //
-        // Output layout:
-        //   Row 1   — verbatim CSV line 1 (the FORMAT line); typically only A1
-        //             carries content so the cell ends up in A1 either way.
-        //   Row 2   — only the nominated column names, COMPACTED into columns
-        //             A, B, C… (no gap columns, even if the original CSV had
-        //             non-nominated fields scattered between them).
-        //   Row 3+  — one row per ASSET LineType in the source CSV, values
-        //             aligned with row 2's compact positions.
-        // The output is narrow (≈ #nominated_fields + 1 columns).
-        public string Simplify0(string xlsxPath, string sheet)
-        {
-            var rows = ReadCsv(_csvPath);
-            if (rows.Count < 2) return xlsxPath;
-
-            var formatLine = rows[0];   // CSV line 1
-            var headerLine = rows[1];   // CSV line 2 — full column header
-
-            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < headerLine.Count; i++)
-            {
-                if (!string.IsNullOrEmpty(headerLine[i]) && !headerIndex.ContainsKey(headerLine[i]))
-                    headerIndex[headerLine[i]] = i;
-            }
-
-            int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
-
-            // Ordered list of CSV column indices to keep: LineType first, then
-            // nominated fields in their declared order. Output cell order
-            // follows this list (column 1 = LineType, column 2 = first nominated, …).
-            var keepIndices = new List<int>();
-            if (lineTypeIdx >= 0) keepIndices.Add(lineTypeIdx);
-            foreach (var f in _nominatedFields)
-            {
-                if (headerIndex.TryGetValue(f, out var idx) && !keepIndices.Contains(idx))
-                    keepIndices.Add(idx);
-            }
-
-            // Filter to ASSET rows only.
-            var assets = new List<List<string>>();
-            if (lineTypeIdx >= 0)
-            {
-                foreach (var row in rows.Skip(2))
-                {
-                    if (lineTypeIdx < row.Count &&
-                        row[lineTypeIdx].Equals("ASSET", StringComparison.OrdinalIgnoreCase))
-                    {
-                        assets.Add(row);
-                    }
-                }
-            }
-
-            var dir = Path.GetDirectoryName(xlsxPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
-            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
-
-            var sheetName = UniqueSheetName(wb, sheet);
-            var ws = wb.Worksheets.Add(sheetName);
-
-            // Row 1 — verbatim original first row. CSV line 1 normally only has
-            // content in cell A1 (the FORMAT string), so it lands in A1.
-            for (int c = 0; c < formatLine.Count; c++)
-                if (!string.IsNullOrEmpty(formatLine[c]))
-                    ws.Cell(1, c + 1).Value = formatLine[c];
-
-            // Row 2 — nominated column names, compacted into A, B, C…
-            for (int i = 0; i < keepIndices.Count; i++)
-            {
-                int srcIdx = keepIndices[i];
-                if (srcIdx < headerLine.Count && !string.IsNullOrEmpty(headerLine[srcIdx]))
-                    ws.Cell(2, i + 1).Value = headerLine[srcIdx];
-            }
-
-            // Row 3+ — ASSET data, same compacted positions as row 2.
-            for (int r = 0; r < assets.Count; r++)
-            {
-                var asset = assets[r];
-                int rowNum = 3 + r;
-                for (int i = 0; i < keepIndices.Count; i++)
-                {
-                    int srcIdx = keepIndices[i];
-                    if (srcIdx < asset.Count && !string.IsNullOrEmpty(asset[srcIdx]))
-                        ws.Cell(rowNum, i + 1).Value = asset[srcIdx];
-                }
-            }
-
-            wb.SaveAs(xlsxPath);
-            return xlsxPath;
-        }
-
-        // ---------- Step 8: source CSV → well-formatted T1 import CSV ----------
+        // ---------- Step 5: source CSV → well-formatted T1 import CSV ----------
         //
         // Rules:
         //   Row 1 — must start with the literal FORMAT line
@@ -361,12 +268,19 @@ namespace T1Sync
         //           (the 154th column) and `SearchPath` at column EY (155th).
         //           If the source header is narrower it's padded with empty cells.
         //   Row 3+ — for each source data record (row a):
-        //              • write row a verbatim (padded to ≥ column EY)
-        //              • if the row's `Asset_Type` cell is non-empty and not "NULL",
-        //                emit an extra ATTRIBUTE row b right after row a with
-        //                    col EX = "asset_type"
-        //                    col EY = the row-a `Asset_Type` value
-        //                (column matching is case-insensitive on the header name).
+        //              • write row a verbatim (with the leading attribute columns
+        //                stripped, padded to ≥ column EY)
+        //              • for every "leading attribute column" (any source column
+        //                appearing BEFORE `AssetRegisterName` in the header)
+        //                whose row-a cell is non-empty and not "NULL", emit an
+        //                extra ATTRIBUTE row b with
+        //                    col 0  = "ATTRIBUTE"
+        //                    col EX = the leading column's header name
+        //                    col EY = the row-a value for that column
+        //                This generalises the previous Asset_Type-only handling
+        //                to match the new Template2Flat layout, where every
+        //                AttributeCode is a leading column ahead of the nominated
+        //                direct fields. Column matching is case-insensitive.
         public string Flat2Import(string sourceCsvPath, string outputCsvPath)
         {
             const string formatStr = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT";
@@ -383,22 +297,24 @@ namespace T1Sync
                 ? rows.Skip(2).ToList()
                 : rows.Skip(1).ToList();
 
-            // Locate Asset_Type column in the source header (case-insensitive)
-            // BEFORE any padding so the index points at the real source column.
-            int assetTypeIdx = -1;
+            // Boundary = index of AssetRegisterName in the source header
+            // (case-insensitive). Everything before it is a "leading attribute
+            // column"; its value becomes an extra ATTRIBUTE row per asset.
+            int boundary = 0;
             for (int i = 0; i < headerRow.Count; i++)
             {
-                if (string.Equals(headerRow[i], "Asset_Type", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(headerRow[i], "AssetRegisterName", StringComparison.OrdinalIgnoreCase))
                 {
-                    assetTypeIdx = i;
+                    boundary = i;
                     break;
                 }
             }
 
-            // Drop the Asset_Type column from the header (its value moves to row b).
-            if (assetTypeIdx >= 0) headerRow.RemoveAt(assetTypeIdx);
+            // Snapshot leading column names BEFORE removing them from the header.
+            var leadingNames = headerRow.GetRange(0, boundary);
 
-            // Pad header to at least eyIdx + 1 cells and place the two key column names.
+            // Drop leading cols, pad to ≥ eyIdx + 1, place key column names.
+            if (boundary > 0) headerRow.RemoveRange(0, boundary);
             while (headerRow.Count <= eyIdx) headerRow.Add("");
             headerRow[exIdx] = "AttributeCode";
             headerRow[eyIdx] = "SearchPath";
@@ -411,25 +327,29 @@ namespace T1Sync
 
             foreach (var srcRow in dataRows)
             {
-                // Capture Asset_Type value BEFORE removing the cell from the row.
-                string assetTypeVal = (assetTypeIdx >= 0 && assetTypeIdx < srcRow.Count)
-                    ? srcRow[assetTypeIdx] : "";
+                // Snapshot the leading values BEFORE removing them from row a.
+                var leadingVals = new List<string>(boundary);
+                for (int i = 0; i < boundary; i++)
+                    leadingVals.Add(i < srcRow.Count ? srcRow[i] : "");
 
-                // Build row a: copy source row, drop the Asset_Type cell.
+                // Row a: source row with the leading cells dropped, padded to ≥ EY.
                 var rowA = new List<string>(srcRow);
-                if (assetTypeIdx >= 0 && assetTypeIdx < rowA.Count) rowA.RemoveAt(assetTypeIdx);
+                if (boundary > 0)
+                    rowA.RemoveRange(0, Math.Min(boundary, rowA.Count));
                 while (rowA.Count <= eyIdx) rowA.Add("");
                 outRows.Add(rowA);
 
-                // Row b: only when Asset_Type was populated (skip empty / "NULL").
-                if (!string.IsNullOrEmpty(assetTypeVal) &&
-                    !string.Equals(assetTypeVal, "NULL", StringComparison.OrdinalIgnoreCase))
+                // One row b per non-empty (non-"NULL") leading cell.
+                for (int j = 0; j < leadingNames.Count; j++)
                 {
+                    var v = leadingVals[j];
+                    if (string.IsNullOrEmpty(v)) continue;
+                    if (string.Equals(v, "NULL", StringComparison.OrdinalIgnoreCase)) continue;
                     var rowB = new List<string>(new string[headerRow.Count]);
                     for (int i = 0; i < rowB.Count; i++) rowB[i] = "";
-                    rowB[0]      = "ATTRIBUTE";
-                    rowB[exIdx]  = "asset_type";
-                    rowB[eyIdx]  = assetTypeVal;
+                    rowB[0]     = "ATTRIBUTE";
+                    rowB[exIdx] = leadingNames[j];
+                    rowB[eyIdx] = v;
                     outRows.Add(rowB);
                 }
             }
@@ -457,166 +377,22 @@ namespace T1Sync
             }));
         }
 
-        // ---------- Step 6: CSV → ultra-compact flat Excel (nominated fields only) ----------
-        //
-        // Even simpler than Flat1: the output has ONLY the nominated
-        // direct-field columns — no CSV-template padding, no T1Sync 6-row
-        // header. Just one header row + one data row per ASSET.
-        //
-        //   Row 1   — nominated field names (e.g. AssetRegisterName, AssetNumber, …)
-        //   Row 2+  — one row per ASSET LineType in the source CSV.
-        public string Flat2(string xlsxPath, string sheet)
-        {
-            var rows = ReadCsv(_csvPath);
-            if (rows.Count < 2) return xlsxPath;
+        // ---------- Step 6: CSV → T1Sync 6-row header + flat data per asset ----------
 
-            var headerLine = rows[1];
-            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < headerLine.Count; i++)
-            {
-                if (!string.IsNullOrEmpty(headerLine[i]) && !headerIndex.ContainsKey(headerLine[i]))
-                    headerIndex[headerLine[i]] = i;
-            }
-
-            int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
-
-            var assets = new List<List<string>>();
-            if (lineTypeIdx >= 0)
-            {
-                foreach (var row in rows.Skip(2))
-                {
-                    if (lineTypeIdx < row.Count &&
-                        row[lineTypeIdx].Equals("ASSET", StringComparison.OrdinalIgnoreCase))
-                    {
-                        assets.Add(row);
-                    }
-                }
-            }
-
-            var dir = Path.GetDirectoryName(xlsxPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
-            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
-
-            var sheetName = UniqueSheetName(wb, sheet);
-            var ws = wb.Worksheets.Add(sheetName);
-
-            // Row 1: just the nominated field names. Columns formatted as text
-            // by default so values like "0100038" keep their leading zeros.
-            for (int i = 0; i < _nominatedFields.Count; i++)
-            {
-                ws.Cell(1, i + 1).Value = _nominatedFields[i];
-                ws.Column(i + 1).Style.NumberFormat.Format = "@";
-            }
-
-            // Row 2+: one row per ASSET.
-            for (int r = 0; r < assets.Count; r++)
-            {
-                var asset = assets[r];
-                int rowNum = 2 + r;
-                for (int i = 0; i < _nominatedFields.Count; i++)
-                {
-                    var f = _nominatedFields[i];
-                    if (headerIndex.TryGetValue(f, out var idx) &&
-                        idx < asset.Count && !string.IsNullOrEmpty(asset[idx]))
-                    {
-                        ws.Cell(rowNum, i + 1).Value = asset[idx];
-                    }
-                }
-            }
-
-            wb.SaveAs(xlsxPath);
-            return xlsxPath;
-        }
-
-        // ---------- Step 5: CSV → simple Excel that mirrors the CSV template ----------
-        //
-        // Output layout:
-        //   Row 1     — verbatim copy of CSV line 1 (the FORMAT line).
-        //   Row 2     — verbatim copy of CSV line 2 (the full column header,
-        //               every CSV column included so the template shape is
-        //               preserved for round-trip with T1's CSV importer).
-        //   Row 3+    — one row per ASSET LineType in the source CSV.
-        //               Only the nominated direct-field columns are populated;
-        //               every other column is left blank. ATTRIBUTE rows are
-        //               dropped entirely.
-        public string Flat1(string xlsxPath, string sheet)
-        {
-            var rows = ReadCsv(_csvPath);
-            if (rows.Count < 2) return xlsxPath;
-
-            var formatLine = rows[0];   // CSV row 1
-            var headerLine = rows[1];   // CSV row 2 — full column header
-
-            // Map header name → column index (CSV column position).
-            var headerIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < headerLine.Count; i++)
-            {
-                if (!string.IsNullOrEmpty(headerLine[i]) && !headerIndex.ContainsKey(headerLine[i]))
-                    headerIndex[headerLine[i]] = i;
-            }
-
-            int lineTypeIdx = headerIndex.GetValueOrDefault("LineType", -1);
-
-            // Indices of columns to populate in data rows: LineType + nominated.
-            var keepIndices = new HashSet<int>();
-            if (lineTypeIdx >= 0) keepIndices.Add(lineTypeIdx);
-            foreach (var f in _nominatedFields)
-                if (headerIndex.TryGetValue(f, out var idx)) keepIndices.Add(idx);
-
-            // Filter to ASSET rows only.
-            var assets = new List<List<string>>();
-            if (lineTypeIdx >= 0)
-            {
-                foreach (var row in rows.Skip(2))
-                {
-                    if (lineTypeIdx < row.Count &&
-                        row[lineTypeIdx].Equals("ASSET", StringComparison.OrdinalIgnoreCase))
-                    {
-                        assets.Add(row);
-                    }
-                }
-            }
-
-            var dir = Path.GetDirectoryName(xlsxPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
-            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
-
-            var sheetName = UniqueSheetName(wb, sheet);
-            var ws = wb.Worksheets.Add(sheetName);
-
-            // Row 1 — verbatim FORMAT line.
-            for (int c = 0; c < formatLine.Count; c++)
-                if (!string.IsNullOrEmpty(formatLine[c]))
-                    ws.Cell(1, c + 1).Value = formatLine[c];
-
-            // Row 2 — verbatim full CSV column header.
-            for (int c = 0; c < headerLine.Count; c++)
-                if (!string.IsNullOrEmpty(headerLine[c]))
-                    ws.Cell(2, c + 1).Value = headerLine[c];
-
-            // Row 3+ — ASSET data, only nominated columns populated.
-            for (int r = 0; r < assets.Count; r++)
-            {
-                var asset = assets[r];
-                int rowNum = 3 + r;
-                foreach (int c in keepIndices)
-                {
-                    if (c < asset.Count && !string.IsNullOrEmpty(asset[c]))
-                        ws.Cell(rowNum, c + 1).Value = asset[c];
-                }
-            }
-
-            wb.SaveAs(xlsxPath);
-            return xlsxPath;
-        }
-
-        public string Template2FlatBrief(string xlsxPath, string sheet)
+        public string Template2Flat(string xlsxPath, string sheet, bool assetTypeOnly = false)
         {
             var (assets, attrCodesOrdered) = ReadCsvBrief();
+
+            // When assetTypeOnly is true, drop every AttributeCode column except
+            // ASSET_TYPE (matched case-insensitively so "Asset_Type"/"asset_type"
+            // also count). Default false keeps the original behaviour: every
+            // distinct AttributeCode in the source gets its own column.
+            if (assetTypeOnly)
+            {
+                attrCodesOrdered = attrCodesOrdered
+                    .Where(c => string.Equals(c, "ASSET_TYPE", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
 
             var dir = Path.GetDirectoryName(xlsxPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -648,14 +424,17 @@ namespace T1Sync
             }
             else
             {
-                // No existing sheet — create one with the brief layout
-                // (nominated direct fields + one column per AttributeCode).
+                // No existing sheet — create one with the brief layout.
+                // Column order: AttributeCode columns lead (one per distinct code
+                // collected from ATTRIBUTE rows, regardless of LevelNumber);
+                // followed by the nominated direct fields with AssetRegisterName
+                // and AssetNumber forced to the front.
                 ws = wb.Worksheets.Add(sheetName);
                 var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
-                foreach (var f in _nominatedFields)
-                    briefCols.Add(("", "", "", "", "A", f));
                 foreach (var code in attrCodesOrdered)
                     briefCols.Add(("Attribute", "", "", "", "A", code));
+                foreach (var f in OrderNominatedFields(_nominatedFields))
+                    briefCols.Add(("", "", "", "", "A", f));
 
                 for (int i = 0; i < briefCols.Count; i++)
                 {
@@ -695,6 +474,74 @@ namespace T1Sync
 
             wb.SaveAs(xlsxPath);
             return xlsxPath;
+        }
+
+        // ---------- Step 7: highlight leaf-node rows in the asset_type column ----------
+        //
+        // Opens an existing Template2Flat workbook, finds the asset_type column
+        // by scanning row 6 (the header row, case-insensitive), then yellow-fills
+        // every data-row cell whose value is a leaf in the hierarchical path.
+        //
+        // A value V is a "leaf" if no other value in the column extends it with
+        // a path separator — i.e. no V' starts with V + '\' or V + '/'. So with
+        //   Tree
+        //   Tree\Street Tree
+        //   Tree\Street Tree\Example Tree
+        // only the third row is highlighted.
+        public string HighlightLeaf(string xlsxPath, string sheet)
+        {
+            var sheetName = MetaSchema.SanitizeSheetName(sheet);
+            using var wb = new XLWorkbook(xlsxPath);
+            if (!wb.Worksheets.Contains(sheetName))
+                throw new ArgumentException($"Sheet '{sheetName}' not found in '{xlsxPath}'.");
+            var ws = wb.Worksheet(sheetName);
+
+            int maxCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
+            int colIdx = -1;
+            for (int c = 1; c <= maxCol; c++)
+            {
+                if (string.Equals(ws.Cell(6, c).GetString(), "asset_type", StringComparison.OrdinalIgnoreCase))
+                {
+                    colIdx = c;
+                    break;
+                }
+            }
+            if (colIdx < 0) return xlsxPath;
+
+            int maxRow = ws.LastRowUsed()?.RowNumber() ?? 0;
+            if (maxRow < 7) { wb.Save(); return xlsxPath; }
+
+            var rowValues = new List<(int Row, string Value)>();
+            for (int r = 7; r <= maxRow; r++)
+            {
+                var v = ws.Cell(r, colIdx).GetString();
+                if (!string.IsNullOrEmpty(v)) rowValues.Add((r, v));
+            }
+
+            var allValues = new HashSet<string>(
+                rowValues.Select(rv => rv.Value),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (r, v) in rowValues)
+            {
+                if (IsLeafPath(v, allValues))
+                    ws.Cell(r, colIdx).Style.Fill.BackgroundColor = XLColor.Yellow;
+            }
+
+            wb.Save();
+            return xlsxPath;
+        }
+
+        private static bool IsLeafPath(string value, HashSet<string> all)
+        {
+            foreach (var other in all)
+            {
+                if (other.Length <= value.Length) continue;
+                if (!other.StartsWith(value, StringComparison.OrdinalIgnoreCase)) continue;
+                var sep = other[value.Length];
+                if (sep == '\\' || sep == '/') return false;
+            }
+            return true;
         }
 
         // Walks the CSV row-by-row, grouping each ASSET line with its following
@@ -761,6 +608,23 @@ namespace T1Sync
         {
             public Dictionary<string, string> Fields     = new(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, string> Attributes = new(StringComparer.OrdinalIgnoreCase);
+        }
+
+        // Promote AssetRegisterName and AssetNumber to the front of the
+        // nominated direct-field list; preserve original order for the rest.
+        private static List<string> OrderNominatedFields(IEnumerable<string> nominated)
+        {
+            var leading = new[] { "AssetRegisterName", "AssetNumber" };
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var ordered = new List<string>();
+            foreach (var name in leading)
+            {
+                var match = nominated.FirstOrDefault(f => string.Equals(f, name, StringComparison.OrdinalIgnoreCase));
+                if (match != null && seen.Add(match)) ordered.Add(match);
+            }
+            foreach (var f in nominated)
+                if (seen.Add(f)) ordered.Add(f);
+            return ordered;
         }
 
         private static string SaveMetaToExcelStatic(string xlsxPath, Dictionary<string, object> meta)
