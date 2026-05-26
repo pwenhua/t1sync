@@ -90,19 +90,19 @@ namespace T1Sync
         // attribute column. Flat2Import is the CSV → CSV variant.
         private static void CsvDemo()
         {
-            const string csvSource = @"c:\temp\flat_4_upload.csv";
+            const string csvSource = @"c:\temp\flat.csv";
             const string outXlsx   = @"c:\temp\upload.xlsx";
-            const string outCsv    = @"c:\temp\upload.csv";
+            const string outCsv    = @"c:\temp\upload_missing.csv";
             const string sheet     = "s0";
 
             if (File.Exists(outXlsx)) File.Delete(outXlsx);
             if (File.Exists(outCsv))  File.Delete(outCsv);
 
             var t = Trans.FromConfig(csvSource);
-            t.Template2Flat(outXlsx, sheet);
+            //t.Template2Flat(outXlsx, sheet);
             //t.Template2Flat(outXlsx, sheet, assetTypeOnly: true);
-            t.HighlightLeaf(outXlsx, sheet);
-            //t.Flat2Import(csvSource, outCsv);
+            t.Flat2Import(csvSource, outCsv);
+            //t.HighlightLeaf(outXlsx, sheet);
 
             Debug.WriteLine($"CSV → {outXlsx}");
         }

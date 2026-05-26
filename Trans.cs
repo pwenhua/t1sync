@@ -315,6 +315,7 @@ namespace T1Sync
 
             // Drop leading cols, pad to ≥ eyIdx + 1, place key column names.
             if (boundary > 0) headerRow.RemoveRange(0, boundary);
+            headerRow.Insert(0, "LineType");
             while (headerRow.Count <= eyIdx) headerRow.Add("");
             headerRow[exIdx] = "AttributeCode";
             headerRow[eyIdx] = "SearchPath";
@@ -336,6 +337,7 @@ namespace T1Sync
                 var rowA = new List<string>(srcRow);
                 if (boundary > 0)
                     rowA.RemoveRange(0, Math.Min(boundary, rowA.Count));
+                rowA.Insert(0, "ASSET");
                 while (rowA.Count <= eyIdx) rowA.Add("");
                 outRows.Add(rowA);
 
