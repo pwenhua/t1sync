@@ -4,8 +4,9 @@
 //   • Otherwise (local file path)         → T1Client_ClosedXML (ClosedXML only).
 //
 // Usage:
-//   T1ClientFactory.ExtractAsset("workshop-TP", xlsxFile, sheet, firstRow, lastRow,
-//                                databaseInstance: "local");
+//   T1ClientFactory.ExtractAssetToExcel("workshop-TP", xlsxFile, sheet, firstRow, lastRow);
+//   T1ClientFactory.ExtractAssetToDB("workshop-TP", xlsxFile, sheet, firstRow, lastRow,
+//                                    databaseInstance: "local");
 //   T1ClientFactory.SyncAssetFromExcel("workshop-TP", xlsxFile, sheet, firstRow, lastRow,
 //                                      dryrun: true);
 //   T1ClientFactory.SaveMetaToExcel("workshop-TP", xlsxFile);
@@ -38,24 +39,44 @@ namespace T1Sync
             }
         }
 
-        public static string ExtractAsset(
+        public static string ExtractAssetToExcel(
             string service,
             string file,
             string sheet,
             int firstRow,
             int lastRow,
-            string? databaseInstance = null,
             string configPath = T1Client_Interop.DefaultConfigPath)
         {
             if (IsOnline(file))
             {
                 var client = new T1Client_Interop(service, configPath);
-                return client.ExtractAsset(file, sheet, firstRow, lastRow, databaseInstance);
+                return client.ExtractAssetToExcel(file, sheet, firstRow, lastRow);
             }
             else
             {
                 var client = new T1Client_ClosedXML(service, configPath);
-                return client.ExtractAsset(file, sheet, firstRow, lastRow, databaseInstance);
+                return client.ExtractAssetToExcel(file, sheet, firstRow, lastRow);
+            }
+        }
+
+        public static string ExtractAssetToDB(
+            string service,
+            string file,
+            string sheet,
+            int firstRow,
+            int lastRow,
+            string databaseInstance,
+            string configPath = T1Client_Interop.DefaultConfigPath)
+        {
+            if (IsOnline(file))
+            {
+                var client = new T1Client_Interop(service, configPath);
+                return client.ExtractAssetToDB(file, sheet, firstRow, lastRow, databaseInstance);
+            }
+            else
+            {
+                var client = new T1Client_ClosedXML(service, configPath);
+                return client.ExtractAssetToDB(file, sheet, firstRow, lastRow, databaseInstance);
             }
         }
 

@@ -66,7 +66,8 @@ namespace T1Sync
 
             //T1ClientFactory.SaveMetaToExcel(service, xlsxFile);
             //T1ClientFactory.SyncAssetFromExcel(service, xlsxFile, sheet, firstRow, lastRow, dryrun: true);
-            T1ClientFactory.ExtractAsset(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance: "mcc");
+            //T1ClientFactory.ExtractAssetToExcel(service, xlsxFile, sheet, firstRow, lastRow);
+            T1ClientFactory.ExtractAssetToDB(service, xlsxFile, sheet, firstRow, lastRow, databaseInstance: "mcc");
         }
 
         // ---------------- Trans demos ----------------

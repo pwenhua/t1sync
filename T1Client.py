@@ -373,11 +373,11 @@ class T1Client:
         return f"DRIVER={{ODBC Driver 17 for SQL Server}};{net_conn_str}"
 
     @staticmethod
-    def _extract_geometry_to_db(asset: dict, asset_number: str, conn, table: str) -> None:
+    def _extract_geometry_wkt(asset: dict) -> str | None:
         """Collect ready-made WKT strings from
             asset['AssetMap']['MapLayers'][*]['Geometries'][*]['WKT']
-        and upsert into `table` keyed by `compkey = asset_number`. Multiple
-        geometries are wrapped in a GEOMETRYCOLLECTION."""
+        Multiple geometries are wrapped in a GEOMETRYCOLLECTION. Returns
+        None when the asset has no geometry."""
         wkts: list[str] = []
         asset_map = asset.get("AssetMap")
         if isinstance(asset_map, dict):
@@ -396,10 +396,13 @@ class T1Client:
                         if isinstance(w, str) and w.strip():
                             wkts.append(w)
         if not wkts:
-            return
+            return None
+        return wkts[0] if len(wkts) == 1 else "GEOMETRYCOLLECTION(" + ", ".join(wkts) + ")"
 
-        wkt = wkts[0] if len(wkts) == 1 else "GEOMETRYCOLLECTION(" + ", ".join(wkts) + ")"
-
+    @staticmethod
+    def _write_geometry_to_db(wkt: str, asset_number: str, conn, table: str) -> None:
+        """Idempotent upsert: delete the existing row for this compkey, then
+        insert wkt + sp_geometry (parsed via geometry::STGeomFromText, SRID 4326)."""
         cur = conn.cursor()
         cur.execute(f"DELETE FROM {table} WHERE compkey = ?", asset_number)
         cur.execute(
@@ -596,17 +599,23 @@ class T1Client:
         print(f"Synced spreadsheet at {xlsx_path}")
         return xlsx_path
 
-    def extract_asset(self, file: str | Path, sheet: str, first_row: int, last_row: int,
-                      database_instance: str | None = None) -> Path:
-        """Populate spreadsheet rows of one sheet with live asset values.
+    def extract_asset_to_excel(self, file: str | Path, sheet: str,
+                                first_row: int, last_row: int) -> Path:
+        """Pulls live values from T1 into the named sheet, one row per asset.
+        Geometry (the AssetMap WKT) is always extracted; the WKT lands in a
+        row-6 header named "WKT" (case-insensitive). No DB."""
+        return self._extract_asset_core(file, sheet, first_row, last_row, database_instance=None)
 
-        For each row in [first_row, last_row] of the named sheet, read the
-        AssetNumber, fetch the asset, and write a value into every column
-        based on its 6-row header tuple (row 1 = kind).
+    def extract_asset_to_db(self, file: str | Path, sheet: str,
+                            first_row: int, last_row: int, database_instance: str) -> Path:
+        """Same as extract_asset_to_excel for the scalar fields, plus the
+        geometry (WKT + sp_geometry) gets upserted to the SQL table configured
+        under config['database'][database_instance]. Always extracts geometry;
+        raises if the database instance can't be opened."""
+        return self._extract_asset_core(file, sheet, first_row, last_row, database_instance=database_instance)
 
-        If `database_instance` is given and `config['database'][database_instance]`
-        has `connection_string` + `table`, also extract MapLayers[0] POINT
-        geometry to the configured table (compkey, wkt) — one row per asset."""
+    def _extract_asset_core(self, file: str | Path, sheet: str, first_row: int, last_row: int,
+                            database_instance: str | None) -> Path:
         from openpyxl import load_workbook  # lazy import
 
         xlsx_path = Path(file)
@@ -632,16 +641,18 @@ class T1Client:
         ]
 
         asset_num_col = None
+        wkt_col = None
         for idx, h in enumerate(headers, start=1):
-            if h[4].lower() == "assetnumber":
+            if asset_num_col is None and h[4].lower() == "assetnumber":
                 asset_num_col = idx
-                break
+            if wkt_col is None and h[4].lower() == "wkt":
+                wkt_col = idx
 
         if not asset_num_col:
             print(f"  -> No 'AssetNumber' header found in sheet {sheet_name}.")
             return xlsx_path
 
-        # Optional: open a SQL connection if a valid database_instance is configured.
+        # extract_asset_to_db requires a usable DB; extract_asset_to_excel passes None.
         db_conn = None
         db_table = None
         if database_instance:
@@ -652,7 +663,8 @@ class T1Client:
                 db_conn = pyodbc.connect(T1Client._odbc_conn_str(db_cfg["connection_string"]))
                 print(f"  -> DB '{database_instance}' connected; geometry -> {db_table}")
             else:
-                print(f"  -> DB instance '{database_instance}' not found / incomplete in config.database.")
+                raise RuntimeError(
+                    f"DB instance '{database_instance}' not found / incomplete in config.database.")
 
         try:
             for row in range(first_row, last_row + 1):
@@ -664,16 +676,21 @@ class T1Client:
                     asset = self.fetch_asset(str(asset_number))
 
                     for col_idx, (attr_code, level, suffix, _data_type, header) in enumerate(headers, start=1):
-                        if header.lower() == "assetnumber":
+                        if header.lower() == "wkt":
                             continue
                         value = T1Client._extract_value(asset, attr_code, level, suffix, header)
                         if value is not None:
                             ws.cell(row=row, column=col_idx, value=value)
 
+                    # Geometry is always extracted; destination depends on the mode.
+                    wkt = T1Client._extract_geometry_wkt(asset)
+                    if wkt is not None and wkt_col is not None:
+                        ws.cell(row=row, column=wkt_col, value=wkt)
+
                     db_error = None
-                    if db_conn is not None and db_table:
+                    if db_conn is not None and db_table and wkt is not None:
                         try:
-                            T1Client._extract_geometry_to_db(asset, str(asset_number), db_conn, db_table)
+                            T1Client._write_geometry_to_db(wkt, str(asset_number), db_conn, db_table)
                         except Exception as db_ex:
                             db_error = f"DB: {db_ex}"
 

@@ -42,7 +42,8 @@ def t1client_demo() -> None:
 
     # path = client.sync_asset_from_excel(xlsx_file, sheet, first_row, last_row, dryrun=True)
 
-    path = client.extract_asset(xlsx_file, sheet, first_row, last_row, database_instance="local")
+    # path = client.extract_asset_to_excel(xlsx_file, sheet, first_row, last_row)
+    path = client.extract_asset_to_db(xlsx_file, sheet, first_row, last_row, database_instance="local")
     print(f"extract_asset done: {path}")
 
 

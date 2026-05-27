@@ -283,7 +283,20 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        public new string ExtractAsset(string file, string sheet, int firstRow, int lastRow, string? databaseInstance = null)
+        // Pulls live values from T1 into the named sheet, one row per asset.
+        // Geometry (the AssetMap WKT) is always extracted; the WKT lands in
+        // a row-6 header named "WKT" (case-insensitive). No DB.
+        public new string ExtractAssetToExcel(string file, string sheet, int firstRow, int lastRow)
+            => ExtractAssetCore(file, sheet, firstRow, lastRow, databaseInstance: null);
+
+        // Same as ExtractAssetToExcel for the scalar fields, plus the
+        // geometry (WKT + sp_geometry) gets upserted to the SQL table
+        // configured under config.database[databaseInstance]. Always extracts
+        // geometry; throws if the database instance can't be opened.
+        public new string ExtractAssetToDB(string file, string sheet, int firstRow, int lastRow, string databaseInstance)
+            => ExtractAssetCore(file, sheet, firstRow, lastRow, databaseInstance);
+
+        private string ExtractAssetCore(string file, string sheet, int firstRow, int lastRow, string? databaseInstance)
         {
             var xlsxPath = file;
             using var wb = new XLWorkbook(xlsxPath);
@@ -312,13 +325,13 @@ namespace T1Sync
             }
 
             int? assetNumCol = null;
+            int? wktCol = null;
             for (int i = 0; i < headers.Count; i++)
             {
-                if (headers[i].Item5.Equals("AssetNumber", StringComparison.OrdinalIgnoreCase))
-                {
+                if (assetNumCol == null && headers[i].Item5.Equals("AssetNumber", StringComparison.OrdinalIgnoreCase))
                     assetNumCol = i + 1;
-                    break;
-                }
+                if (wktCol == null && headers[i].Item5.Equals("WKT", StringComparison.OrdinalIgnoreCase))
+                    wktCol = i + 1;
             }
 
             if (!assetNumCol.HasValue)
@@ -327,7 +340,7 @@ namespace T1Sync
                 return xlsxPath;
             }
 
-            // Optional: open a SQL connection if a valid databaseInstance is configured.
+            // ExtractAssetToDB requires a usable DB; ExtractAssetToExcel passes null.
             SqlConnection? dbConn = null;
             string? dbTable = null;
             if (!string.IsNullOrEmpty(databaseInstance))
@@ -346,7 +359,8 @@ namespace T1Sync
                 }
                 else
                 {
-                    Debug.WriteLine($"  -> DB instance '{databaseInstance}' not found / incomplete in config.database.");
+                    throw new InvalidOperationException(
+                        $"DB instance '{databaseInstance}' not found / incomplete in config.database.");
                 }
             }
 
@@ -365,6 +379,8 @@ namespace T1Sync
                         for (int colIdx = 0; colIdx < headers.Count; colIdx++)
                         {
                             var (attrCode, level, suffix, _, header) = headers[colIdx];
+                            if (header.Equals("WKT", StringComparison.OrdinalIgnoreCase)) continue;
+
                             var val = ExtractValueLocal(asset, attrCode, level, suffix, header);
                             if (val != null)
                             {
@@ -372,12 +388,17 @@ namespace T1Sync
                             }
                         }
 
+                        // Geometry is always extracted; destination depends on the mode.
+                        var wkt = ExtractGeometryWkt(asset);
+                        if (wkt != null && wktCol.HasValue)
+                            SetCellValueLocal(ws.Cell(row, wktCol.Value), wkt);
+
                         string? dbError = null;
-                        if (dbConn != null && !string.IsNullOrEmpty(dbTable))
+                        if (dbConn != null && !string.IsNullOrEmpty(dbTable) && wkt != null)
                         {
                             try
                             {
-                                ExtractGeometryToDb(asset, assetNumber, dbConn, dbTable);
+                                WriteGeometryToDb(wkt, assetNumber, dbConn, dbTable);
                             }
                             catch (Exception dbEx)
                             {
@@ -403,11 +424,11 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        private static void ExtractGeometryToDb(JsonElement asset, string assetNumber, SqlConnection conn, string table)
+        // Collect ready-made WKT strings from AssetMap.MapLayers[*].Geometries[*].WKT.
+        // Multiple geometries are wrapped in a GEOMETRYCOLLECTION. Returns null
+        // when the asset has no geometry.
+        private static string? ExtractGeometryWkt(JsonElement asset)
         {
-            // Collect ready-made WKT strings directly from
-            //   AssetMap.MapLayers[*].Geometries[*].WKT
-            // Multiple geometries are wrapped in a GEOMETRYCOLLECTION.
             var wkts = new List<string>();
             if (asset.TryGetProperty("AssetMap", out var assetMap) &&
                 assetMap.TryGetProperty("MapLayers", out var mapLayers) &&
@@ -427,13 +448,16 @@ namespace T1Sync
                     }
                 }
             }
-            if (wkts.Count == 0) return;
-
-            string wkt = wkts.Count == 1
+            if (wkts.Count == 0) return null;
+            return wkts.Count == 1
                 ? wkts[0]
                 : "GEOMETRYCOLLECTION(" + string.Join(", ", wkts) + ")";
+        }
 
-            // Idempotent upsert: delete existing row for this compkey, then insert.
+        // Idempotent upsert: delete the existing row for this compkey, then
+        // insert wkt + sp_geometry (parsed via geometry::STGeomFromText, SRID 4326).
+        private static void WriteGeometryToDb(string wkt, string assetNumber, SqlConnection conn, string table)
+        {
             using (var del = new SqlCommand($"DELETE FROM {table} WHERE compkey = @compkey", conn))
             {
                 del.Parameters.AddWithValue("@compkey", assetNumber);
