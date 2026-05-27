@@ -99,7 +99,6 @@ namespace T1Sync
             //t.Template2Flat(outXlsx, sheet);
             t.Template2Flat(outXlsx, sheet, assetTypeOnly: true);
             //t.Flat2Import(csvSource, outCsv);
-            //t.HighlightLeaf(@"https://maroondahcc.sharepoint.com/sites/AssetsWorkspace/Shared%20Documents/Asset%20Management/AssetRegister/AssetRegisterTest.xlsx?web=1", "sheet1");
 
             Debug.WriteLine($"CSV → {outXlsx}");
         }

@@ -71,7 +71,6 @@ def trans_demo() -> None:
     # CSV → flat Excel (every AttributeCode → its own column).
     t.template2_flat(out_xlsx, sheet)
     # t.template2_flat(out_xlsx, sheet, asset_type_only=True)
-    t.highlight_leaf(out_xlsx, sheet)
     # t.flat2import(csv_source, out_csv)
     print(f"CSV → {out_xlsx}")
 

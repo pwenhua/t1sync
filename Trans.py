@@ -1,12 +1,41 @@
 # Trans.py — Python mirror of the C# Trans class.
 #
-# Reads a T1 ASSET CSV export and produces:
-#   - parse_meta()            → hierarchical meta dict (same shape as T1Client.parse_assetitem_meta)
-#   - save_meta_to_json(...)  → write the meta dict to a JSON file
-#   - save_meta_to_excel(...) → write the meta as a 6-row-header workbook sheet
-#   - template2_flat()        → T1Sync 6-row header + flat data (one row per asset)
-#                                 optional asset_type_only=True drops every attribute
-#                                 column except ASSET_TYPE
+# Converts a T1 ASSET CSV "template" export into flat, import-ready shapes.
+# The source CSV groups every asset across multiple rows (one ASSET row +
+# N ATTRIBUTE rows); Trans flattens that for editing and walks it back to
+# bulk-import shape.
+#
+# Source CSV format (T1 download template):
+#   Row 1  — system-reserved literal "FORMAT ASSET, STANDARD 1.0, …"
+#   Row 2  — column header. Column A is always "LineType"; the rest are
+#            direct fields (AssetRegisterName, AssetNumber, …) and the
+#            attribute slot columns (AttributeCode, SearchPath, LevelNumber,
+#            AssetAttributeUserfield1, AssetAttributeSelectionType1, …).
+#   Row 3+ — data rows, dispatched on LineType:
+#              "ASSET"     — exactly one per asset record; carries that
+#                            asset's direct-field values.
+#              "ATTRIBUTE" — 0..N per asset, immediately following the ASSET
+#                            row. Each fills a single (AttributeCode,
+#                            LevelNumber) slot of the most recent ASSET row.
+#
+# Public methods:
+#   parse_meta / save_meta_to_json / save_meta_to_excel
+#       CSV → hierarchical meta dict, JSON, or 6-row-header xlsx.
+#   template2_flat(xlsx, sheet, asset_type_only=False)
+#       Source template CSV → flat xlsx. Collapses each asset's ASSET + N
+#       ATTRIBUTE rows into a single row, with one column per AttributeCode
+#       (cell value = that attribute's SearchPath) plus one column per
+#       nominated direct field. No LineType column — the flat shape is
+#       editable as-is. asset_type_only=True keeps only the ASSET_TYPE
+#       attribute column.
+#   flat2import(source_csv, output_csv)
+#       Flat CSV → T1 bulk-import CSV. Reverses template2_flat: re-adds the
+#       LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
+#       per non-empty AttributeCode value, in the shape T1's bulk-import
+#       accepts.
+#
+# Nominated direct fields are loaded once from config.json's top-level
+# "nominated_fields" array — see Trans.from_config.
 
 from __future__ import annotations
 
@@ -49,15 +78,6 @@ class Trans:
             if name and name not in idx:
                 idx[name] = i
         return idx
-
-    def _asset_rows(self, rows: list[list[str]], line_type_idx: int) -> list[list[str]]:
-        out = []
-        if line_type_idx < 0:
-            return out
-        for row in rows[2:]:
-            if line_type_idx < len(row) and row[line_type_idx].upper() == "ASSET":
-                out.append(row)
-        return out
 
     # ---------- parse_meta (hierarchical) ----------
 
@@ -185,13 +205,26 @@ class Trans:
         wb.save(path)
         return path
 
-    # ---------- template2_flat (T1Sync 6-row header + flat data per asset) ----------
+    # ---------- template2_flat: source CSV → flat xlsx ----------
+    #
+    # The source template stores one asset across many CSV rows (one
+    # LineType=ASSET row + 0..N LineType=ATTRIBUTE rows). This method
+    # collapses that into a single row per asset:
+    #
+    #   <AttributeCode 1> … <AttributeCode N> | AssetRegisterName, AssetNumber, …
+    #   ─── one column per distinct code ───    ─── nominated direct fields ───
+    #
+    # The cell under each AttributeCode column holds that attribute's
+    # SearchPath. Captioned sub-fields (Userfield1, SelectionType2, …) are
+    # NOT exploded into columns — this is the "brief" view.
+    #
+    # Output is a 6-row-header xlsx (kind / code / level / suffix / dataType
+    # / header), data starts at row 7. No LineType column — flat2import
+    # re-adds it. asset_type_only=True keeps only the ASSET_TYPE attribute
+    # column (case-insensitive).
 
     def template2_flat(self, xlsx_path: str | Path, sheet: str,
                        asset_type_only: bool = False) -> Path:
-        """When asset_type_only=True, drop every AttributeCode column except
-        ASSET_TYPE (matched case-insensitively). Default False keeps every
-        distinct AttributeCode in the source as its own column."""
         from openpyxl import Workbook, load_workbook
         from openpyxl.utils import get_column_letter
 
@@ -259,8 +292,9 @@ class Trans:
         else:
             # Fresh sheet — brief layout. AttributeCode columns lead (one per
             # distinct code from ATTRIBUTE rows, regardless of LevelNumber);
-            # the nominated direct fields follow, with AssetRegisterName and
-            # AssetNumber forced to the front.
+            # then nominated direct fields, with AssetRegisterName and
+            # AssetNumber forced to the front. No LineType column — it's
+            # re-added only when flat2import generates the bulk-import CSV.
             ws = wb.create_sheet(sheet_name)
             brief_cols = []
             for code in attr_codes_ordered:
@@ -279,6 +313,9 @@ class Trans:
             layout = [(c[0], c[2], c[5]) for c in brief_cols]
 
         # Data starts at row 7 — one row per asset.
+        #   kind=""        + header         → direct field         (asset.fields)
+        #   kind="Attribute" + level=""     → AttributeCode scalar (asset.attributes)
+        #   kind="Attribute" + level="…"    → captioned, leave blank
         for r, asset in enumerate(assets):
             for i, (kind, level, header) in enumerate(layout, start=1):
                 val = None
@@ -292,95 +329,32 @@ class Trans:
         wb.save(path)
         return path
 
-    # ---------- highlight_leaf (yellow-fill leaf rows in asset_type column) ----------
+    # ---------- flat2import: flat CSV → T1 bulk-import CSV ----------
     #
-    # Opens an existing Template2Flat workbook, finds the asset_type column by
-    # scanning row 6 (the header row, case-insensitive), then yellow-fills every
-    # data-row cell whose value is a leaf in the hierarchical path.
+    # Reverses template2_flat. Each input row holds one asset's data in a
+    # flat shape (AttributeCode columns first, then direct fields); T1's
+    # bulk import wants that asset split back into one ASSET row (carrying
+    # the direct fields) plus one ATTRIBUTE row per non-empty AttributeCode
+    # (carrying that code + its SearchPath value).
     #
-    # A value V is a "leaf" if no other value in the column extends it with a
-    # path separator (so neither V + '\\' + … nor V + '/' + … appears). Given
-    #   Tree
-    #   Tree\Street Tree
-    #   Tree\Street Tree\Example Tree
-    # only the third row is highlighted.
-
-    def highlight_leaf(self, xlsx_path: str | Path, sheet: str) -> Path:
-        from openpyxl import load_workbook
-        from openpyxl.styles import PatternFill
-
-        path = Path(xlsx_path)
-        wb = load_workbook(path)
-        sheet_name = self._sanitize_sheet_name(sheet)
-        if sheet_name not in wb.sheetnames:
-            raise ValueError(f"Sheet {sheet_name!r} not found in {path}")
-        ws = wb[sheet_name]
-
-        col_idx = -1
-        for c in range(1, ws.max_column + 1):
-            h = ws.cell(row=6, column=c).value
-            if h and str(h).lower() == "asset_type":
-                col_idx = c
-                break
-        if col_idx < 0:
-            return path
-
-        if ws.max_row < 7:
-            wb.save(path)
-            return path
-
-        row_values: list[tuple[int, str]] = []
-        for r in range(7, ws.max_row + 1):
-            v = ws.cell(row=r, column=col_idx).value
-            if v:
-                row_values.append((r, str(v)))
-
-        all_lower = {v.lower() for _, v in row_values}
-        yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-
-        for r, v in row_values:
-            if self._is_leaf_path(v, all_lower):
-                ws.cell(row=r, column=col_idx).fill = yellow
-
-        wb.save(path)
-        return path
-
-    @staticmethod
-    def _is_leaf_path(value: str, all_lower: set[str]) -> bool:
-        v = value.lower()
-        for other in all_lower:
-            if len(other) <= len(v):
-                continue
-            if not other.startswith(v):
-                continue
-            if other[len(v)] in ("\\", "/"):
-                return False
-        return True
-
-    # ---------- flat2import (source CSV → well-formatted T1 import CSV) ----------
+    # Input header (saved-as CSV from template2_flat):
+    #   <AttributeCode 1> … <AttributeCode N> | AssetRegisterName, AssetNumber, …
+    #   ─── leading attribute columns ───       ─── nominated direct fields ───
     #
-    # Rules:
-    #   Row 1 — must start with "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT".
-    #           Prepended if the source CSV doesn't already start with it.
-    #   Row 2 — column header, with `AttributeCode` placed at Excel column EX
-    #           (the 154th column) and `SearchPath` at column EY (155th).
-    #           Source header is padded with empty cells if narrower.
-    #   Row 3+ — for each source data record (row a):
-    #              • write row a verbatim (with the leading attribute columns
-    #                stripped, padded to ≥ column EY)
-    #              • for every "leading attribute column" (any source column
-    #                appearing BEFORE `AssetRegisterName` in the header) whose
-    #                row-a cell is non-empty and not "NULL", emit an extra
-    #                ATTRIBUTE row b with
-    #                    col 0  = "ATTRIBUTE"
-    #                    col EX = the leading column's header name
-    #                    col EY = the row-a value for that column
-    #            Column matching is case-insensitive.
+    # Output:
+    #   Row 1     — "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
+    #   Row 2     — LineType, <nominated direct fields…>, AttributeCode, SearchPath
+    #   Row 3+    — per input asset:
+    #                 row a:   LineType="ASSET", <direct values…>, blank, blank
+    #                 row b…:  one per non-empty (non-"NULL") AttributeCode cell,
+    #                          LineType="ATTRIBUTE", <blanks…>,
+    #                          AttributeCode=<column name>, SearchPath=<cell value>
+    #
+    # Column matching is case-insensitive; the leading/nominated boundary is
+    # the position of `AssetRegisterName` in the input header.
 
     def flat2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
         FORMAT_STR = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
-        EX_IDX = 153  # 0-based; column 154 (Excel column EX)
-        EY_IDX = 154  # 0-based; column 155 (Excel column EY)
 
         with open(source_csv_path, "r", encoding="utf-8", newline="") as f:
             rows = [row for row in csv.reader(f)]
@@ -404,13 +378,14 @@ class Trans:
 
         leading_names = list(header_row[:boundary])
 
-        # Drop leading cols, pad to ≥ EY_IDX + 1, place key column names.
+        # Drop leading cols; prepend LineType; append AttributeCode + SearchPath.
         if boundary > 0:
             del header_row[:boundary]
-        while len(header_row) <= EY_IDX:
-            header_row.append("")
-        header_row[EX_IDX] = "AttributeCode"
-        header_row[EY_IDX] = "SearchPath"
+        header_row.insert(0, "LineType")
+        ex_idx = len(header_row)
+        ey_idx = ex_idx + 1
+        header_row.append("AttributeCode")
+        header_row.append("SearchPath")
 
         out_rows: list[list[str]] = [
             [FORMAT_STR],
@@ -421,11 +396,12 @@ class Trans:
             # Snapshot leading values BEFORE removing them from row a.
             leading_vals = [src_row[i] if i < len(src_row) else "" for i in range(boundary)]
 
-            # Row a: source row with the leading cells dropped, padded to ≥ EY.
+            # Row a: drop leading cells, prepend "ASSET", pad to header width.
             row_a = list(src_row)
             if boundary > 0:
                 del row_a[:min(boundary, len(row_a))]
-            while len(row_a) <= EY_IDX:
+            row_a.insert(0, "ASSET")
+            while len(row_a) < len(header_row):
                 row_a.append("")
             out_rows.append(row_a)
 
@@ -436,8 +412,8 @@ class Trans:
                     continue
                 row_b = [""] * len(header_row)
                 row_b[0]      = "ATTRIBUTE"
-                row_b[EX_IDX] = name
-                row_b[EY_IDX] = v
+                row_b[ex_idx] = name
+                row_b[ey_idx] = v
                 out_rows.append(row_b)
 
         path = Path(output_csv_path)

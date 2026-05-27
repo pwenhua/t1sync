@@ -1,42 +1,41 @@
-// Trans.cs — read a T1 ASSET CSV export and produce the same meta
-// shape as workshop-TP.json (built by T1Client.ParseAssetsMeta), then save
-// it to an Excel workbook the same way T1Client.SaveMetaToExcel does.
+// Trans.cs — convert a T1 ASSET CSV "template" export into flat,
+// import-ready shapes. The source CSV groups every asset across multiple
+// rows (one ASSET row + N ATTRIBUTE rows); Trans flattens that for editing
+// and walks it back to bulk-import shape.
 //
-// CSV layout (T1 standard export):
-//   line 1: "FORMAT ASSET, STANDARD 1.0, …"        ← skipped
-//   line 2: header row (LineType, AssetRegisterName, …, AttributeCode,
-//                       SearchPath, LevelNumber, AssetAttributeUserfield1, …)
-//   line 3: LineType=ASSET row — direct field values
-//   line 4+: LineType=ATTRIBUTE rows — one per (AttributeCode, LevelNumber)
+// Source CSV format (T1 download template):
+//   Row 1  — system-reserved literal "FORMAT ASSET, STANDARD 1.0, …"
+//   Row 2  — column header. Column A is always "LineType"; the rest are
+//            direct fields (AssetRegisterName, AssetNumber, …) and the
+//            attribute slot columns (AttributeCode, SearchPath, LevelNumber,
+//            AssetAttributeUserfield1, AssetAttributeSelectionType1, …).
+//   Row 3+ — data rows, dispatched on LineType:
+//              "ASSET"     — exactly one per asset record; carries that
+//                            asset's direct-field values.
+//              "ATTRIBUTE" — zero or more per asset, immediately following
+//                            the ASSET row. Each one fills a single
+//                            (AttributeCode, LevelNumber) slot of the most
+//                            recent ASSET above.
 //
-// Meta shape produced (matches T1Client.ParseAssetsMeta hierarchical schema):
-//   {
-//     "Tree/Street Tree": {
-//        "fields": { "AssetRegisterName": "A", "AssetNumber": "A", ... },
-//        "attributes": {
-//          "ASSET_TYPE": {
-//            "dataType": "A",
-//            "levels": {
-//              "1": { "Userfield1": [caption, "N"], "SelectionType1": [caption, "A"], ... },
-//              "2": { "Userfield1": [caption, "A"] }
-//            }
-//          },
-//          "LOCATION":    { "dataType": "A" },
-//          "SERVICEAREA": { "dataType": "A" }
-//        }
-//     }
-//   }
-// CSV exports don't carry T1's captions, so the caption slot is left empty
-// (""). The Excel that comes out has a blank row-6 cell for each captioned
-// attribute, ready for the user to fill in.
+// What this class produces (each line is a public method):
+//   ParseMeta / SaveMetaToJson / SaveMetaToExcel
+//     CSV → hierarchical meta dict (same shape T1Client.ParseAssetsMeta
+//     emits) and on disk as JSON / a 6-row-header xlsx.
+//   Template2Flat(xlsx, sheet, assetTypeOnly = false)
+//     Source template CSV → flat xlsx. Collapses each asset's ASSET + N
+//     ATTRIBUTE rows into a single row, with one column per AttributeCode
+//     (cell value = that attribute's SearchPath) plus one column per
+//     nominated direct field. No LineType column — the flat shape is
+//     editable as-is. assetTypeOnly=true keeps only the ASSET_TYPE
+//     attribute column.
+//   Flat2Import(sourceCsv, outputCsv)
+//     Flat CSV → T1 bulk-import CSV. Reverses Template2Flat: re-adds the
+//     LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
+//     per non-empty AttributeCode value, in the shape T1's bulk-import
+//     accepts.
 //
-// Usage:
-//   var t = new Trans("ASSET_Export_25052026-011611.csv",
-//                              "AssetRegisterName", "AssetNumber", "Description",
-//                              "ShortDescription", "Status", "OperatingStatus");
-//   var meta = t.ParseMeta();
-//   t.SaveMetaToJson(@"c:\temp\csv-meta.json", "Tree/Street Tree");
-//   t.SaveMetaToExcel(@"c:\temp\csv-meta.xlsx", "Tree/Street Tree");
+// Nominated direct fields are loaded once from the top-level
+// "nominated_fields" array in config.json — see Trans.FromConfig.
 
 using System;
 using System.Collections.Generic;
@@ -94,7 +93,7 @@ namespace T1Sync
             return fields;
         }
 
-        // ---------- Step 1: CSV → meta dict ----------
+        // ---------- CSV → hierarchical meta dict ----------
 
         public Dictionary<string, object> ParseMeta()
         {
@@ -221,7 +220,7 @@ namespace T1Sync
             return "A";
         }
 
-        // ---------- Step 2: meta dict → JSON file ----------
+        // ---------- meta dict → JSON file ----------
 
         public string SaveMetaToJson(string jsonPath, string nodeName)
         {
@@ -232,8 +231,7 @@ namespace T1Sync
             return jsonPath;
         }
 
-        // ---------- Step 3: meta dict → Excel workbook ----------
-        // Mirrors T1Client_Interop.SaveMetaToExcel (ClosedXML path).
+        // ---------- meta dict → Excel workbook (mirrors T1Client.SaveMetaToExcel) ----------
 
         public string SaveMetaToExcel(string xlsxPath, string nodeName)
         {
@@ -242,45 +240,29 @@ namespace T1Sync
             return SaveMetaToExcelStatic(xlsxPath, wrapped);
         }
 
-        // ---------- Step 4: CSV (template) → flat brief Excel ----------
+        // ---------- Flat2Import: flat CSV → T1 bulk-import CSV ----------
         //
-        // SaveMetaToExcel produces a metadata-only workbook (6 header rows + no
-        // data). Template2Flat produces a data workbook:
-        //   • The CSV is a "template" — one logical asset spans many CSV rows:
-        //       one ASSET line + 0..N following ATTRIBUTE lines.
-        //   • The output is "flat" — one row per asset, one column per
-        //     (nominated direct field) and one column per (AttributeCode).
-        //   • "Brief" — captioned sub-fields inside each attribute (Userfield1,
-        //     SelectionType2, …) are NOT exploded into their own columns.
-        //     The column for each AttributeCode just holds the SearchPath
-        //     (i.e. the "value" of that attribute).
+        // Reverses Template2Flat. Each input row holds one asset's data in
+        // a flat shape (AttributeCode columns first, then direct fields);
+        // T1's bulk import wants that asset split back into one ASSET row
+        // (carrying the direct fields) plus one ATTRIBUTE row per non-empty
+        // AttributeCode (carrying that code + its SearchPath value).
         //
-        // Header layout is the same 6-row scheme T1Client uses, so the output
-        // is consumable by extract_asset / sync_asset_from_excel unchanged.
-        // ---------- Step 5: source CSV → well-formatted T1 import CSV ----------
+        // Input header (saved-as CSV from Template2Flat):
+        //   <AttributeCode 1> … <AttributeCode N> | AssetRegisterName, AssetNumber, …
+        //   ─── leading attribute columns ───       ─── nominated direct fields ───
         //
-        // Rules:
-        //   Row 1 — must start with the literal FORMAT line
-        //           "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT".
-        //           If the source CSV already has it at row 1, keep it; otherwise
-        //           a fresh FORMAT row is prepended.
-        //   Row 2 — column header, with `AttributeCode` placed at Excel column EX
-        //           (the 154th column) and `SearchPath` at column EY (155th).
-        //           If the source header is narrower it's padded with empty cells.
-        //   Row 3+ — for each source data record (row a):
-        //              • write row a verbatim (with the leading attribute columns
-        //                stripped, padded to ≥ column EY)
-        //              • for every "leading attribute column" (any source column
-        //                appearing BEFORE `AssetRegisterName` in the header)
-        //                whose row-a cell is non-empty and not "NULL", emit an
-        //                extra ATTRIBUTE row b with
-        //                    col 0  = "ATTRIBUTE"
-        //                    col EX = the leading column's header name
-        //                    col EY = the row-a value for that column
-        //                This generalises the previous Asset_Type-only handling
-        //                to match the new Template2Flat layout, where every
-        //                AttributeCode is a leading column ahead of the nominated
-        //                direct fields. Column matching is case-insensitive.
+        // Output:
+        //   Row 1     — "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
+        //   Row 2     — LineType, <nominated direct fields…>, AttributeCode, SearchPath
+        //   Row 3+    — per input asset:
+        //                 row a:   LineType="ASSET", <direct values…>, blank, blank
+        //                 row b…:  one per non-empty (non-"NULL") AttributeCode cell,
+        //                          LineType="ATTRIBUTE", <blanks…>,
+        //                          AttributeCode=<column name>, SearchPath=<cell value>
+        //
+        // Column matching is case-insensitive; the leading/nominated boundary
+        // is the position of `AssetRegisterName` in the input header.
         public string Flat2Import(string sourceCsvPath, string outputCsvPath)
         {
             const string formatStr = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT";
@@ -380,8 +362,23 @@ namespace T1Sync
             }));
         }
 
-        // ---------- Step 6: CSV → T1Sync 6-row header + flat data per asset ----------
-
+        // ---------- Template2Flat: source CSV → flat xlsx ----------
+        //
+        // The source template stores one asset across many CSV rows (one
+        // LineType=ASSET row + 0..N LineType=ATTRIBUTE rows). This method
+        // collapses that into a single row per asset:
+        //
+        //   <AttributeCode 1> … <AttributeCode N> | AssetRegisterName, AssetNumber, …
+        //   ─── one column per distinct code ───    ─── nominated direct fields ───
+        //
+        // The cell under each AttributeCode column holds that attribute's
+        // SearchPath. Captioned sub-fields (Userfield1, SelectionType2, …)
+        // are NOT exploded into columns — this is the "brief" view.
+        //
+        // Output is a 6-row-header xlsx (kind / code / level / suffix /
+        // dataType / header), data starts at row 7. No LineType column —
+        // Flat2Import re-adds it. assetTypeOnly=true keeps only the
+        // ASSET_TYPE attribute column (case-insensitive match).
         public string Template2Flat(string xlsxPath, string sheet, bool assetTypeOnly = false)
         {
             if (File.Exists(xlsxPath)) File.Delete(xlsxPath);
@@ -430,13 +427,14 @@ namespace T1Sync
             else
             {
                 // No existing sheet — create one with the brief layout.
-                // Column order: LineType leads, then AttributeCode columns (one per distinct code
-                // collected from ATTRIBUTE rows, regardless of LevelNumber);
-                // followed by the nominated direct fields with AssetRegisterName
-                // and AssetNumber forced to the front.
+                // Column order: AttributeCode columns lead (one per distinct
+                // code from ATTRIBUTE rows, regardless of LevelNumber),
+                // followed by the nominated direct fields with
+                // AssetRegisterName and AssetNumber forced to the front.
+                // LineType is NOT written — it's added back only when
+                // Flat2Import generates the bulk-import CSV.
                 ws = wb.Worksheets.Add(sheetName);
                 var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
-                briefCols.Add(("", "", "", "", "A", "LineType"));
                 foreach (var code in attrCodesOrdered)
                     briefCols.Add(("Attribute", "", "", "", "A", code));
                 foreach (var f in OrderNominatedFields(_nominatedFields))
@@ -457,9 +455,9 @@ namespace T1Sync
             }
 
             // Data rows start at row 7 — one per asset.
-            //   kind=""        + header → direct field         → fill from asset.Fields
-            //   kind="Attribute" + level=""  → AttributeCode scalar → fill from asset.Attributes
-            //   kind="Attribute" + level="level_N"             → captioned, leave blank
+            //   kind=""        + header         → direct field         (asset.Fields)
+            //   kind="Attribute" + level=""     → AttributeCode scalar (asset.Attributes)
+            //   kind="Attribute" + level="…"    → captioned, leave blank ("brief")
             for (int r = 0; r < assets.Count; r++)
             {
                 var asset = assets[r];
@@ -468,13 +466,10 @@ namespace T1Sync
                 {
                     var (kind, level, header) = layout[i];
                     string? val = null;
-                    if (header == "LineType")
-                        val = "ASSET";
-                    else if (kind == "" && !string.IsNullOrEmpty(header))
+                    if (kind == "" && !string.IsNullOrEmpty(header))
                         asset.Fields.TryGetValue(header, out val);
                     else if (kind == "Attribute" && string.IsNullOrEmpty(level))
                         asset.Attributes.TryGetValue(header, out val);
-                    // else: captioned attribute → leave blank ("brief")
 
                     if (!string.IsNullOrEmpty(val)) ws.Cell(rowNum, i + 1).Value = val;
                 }
@@ -484,77 +479,9 @@ namespace T1Sync
             return xlsxPath;
         }
 
-        // ---------- Step 7: highlight leaf-node rows in the asset_type column ----------
-        //
-        // Opens an existing Template2Flat workbook, finds the asset_type column
-        // by scanning row 6 (the header row, case-insensitive), then yellow-fills
-        // every data-row cell whose value is a leaf in the hierarchical path.
-        //
-        // A value V is a "leaf" if no other value in the column extends it with
-        // a path separator — i.e. no V' starts with V + '\' or V + '/'. So with
-        //   Tree
-        //   Tree\Street Tree
-        //   Tree\Street Tree\Example Tree
-        // only the third row is highlighted.
-        public string HighlightLeaf(string xlsxPath, string sheet)
-        {
-            var sheetName = MetaSchema.SanitizeSheetName(sheet);
-            using var wb = new XLWorkbook(xlsxPath);
-            if (!wb.Worksheets.Contains(sheetName))
-                throw new ArgumentException($"Sheet '{sheetName}' not found in '{xlsxPath}'.");
-            var ws = wb.Worksheet(sheetName);
-
-            int maxCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
-            int colIdx = -1;
-            for (int c = 1; c <= maxCol; c++)
-            {
-                if (string.Equals(ws.Cell(6, c).GetString(), "asset_type", StringComparison.OrdinalIgnoreCase))
-                {
-                    colIdx = c;
-                    break;
-                }
-            }
-            if (colIdx < 0) return xlsxPath;
-
-            int maxRow = ws.LastRowUsed()?.RowNumber() ?? 0;
-            if (maxRow < 7) { wb.Save(); return xlsxPath; }
-
-            var rowValues = new List<(int Row, string Value)>();
-            for (int r = 7; r <= maxRow; r++)
-            {
-                var v = ws.Cell(r, colIdx).GetString();
-                if (!string.IsNullOrEmpty(v)) rowValues.Add((r, v));
-            }
-
-            var allValues = new HashSet<string>(
-                rowValues.Select(rv => rv.Value),
-                StringComparer.OrdinalIgnoreCase);
-
-            foreach (var (r, v) in rowValues)
-            {
-                if (IsLeafPath(v, allValues))
-                    ws.Cell(r, colIdx).Style.Fill.BackgroundColor = XLColor.Yellow;
-            }
-
-            wb.Save();
-            return xlsxPath;
-        }
-
-        private static bool IsLeafPath(string value, HashSet<string> all)
-        {
-            foreach (var other in all)
-            {
-                if (other.Length <= value.Length) continue;
-                if (!other.StartsWith(value, StringComparison.OrdinalIgnoreCase)) continue;
-                var sep = other[value.Length];
-                if (sep == '\\' || sep == '/') return false;
-            }
-            return true;
-        }
-
-        // Walks the CSV row-by-row, grouping each ASSET line with its following
-        // ATTRIBUTE lines into one AssetRecord. Returns (assets, ordered list of
-        // distinct AttributeCodes encountered, by first appearance).
+        // Walks the source CSV, grouping each LineType=ASSET row with its
+        // following LineType=ATTRIBUTE rows into one AssetRecord. Returns
+        // (assets, ordered list of distinct AttributeCodes by first appearance).
         private (List<AssetRecord> Assets, List<string> AttrCodes) ReadCsvBrief()
         {
             var rows = ReadCsv(_csvPath);
