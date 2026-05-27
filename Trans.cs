@@ -284,8 +284,6 @@ namespace T1Sync
         public string Flat2Import(string sourceCsvPath, string outputCsvPath)
         {
             const string formatStr = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT";
-            const int    exIdx     = 153;  // 0-based; column 154; Excel column EX
-            const int    eyIdx     = 154;  // 0-based; column 155; Excel column EY
 
             var rows = ReadCsv(sourceCsvPath);
 
@@ -313,12 +311,15 @@ namespace T1Sync
             // Snapshot leading column names BEFORE removing them from the header.
             var leadingNames = headerRow.GetRange(0, boundary);
 
-            // Drop leading cols, pad to ≥ eyIdx + 1, place key column names.
+            // Drop leading cols, place key column names immediately after nominated fields.
             if (boundary > 0) headerRow.RemoveRange(0, boundary);
             headerRow.Insert(0, "LineType");
-            while (headerRow.Count <= eyIdx) headerRow.Add("");
-            headerRow[exIdx] = "AttributeCode";
-            headerRow[eyIdx] = "SearchPath";
+            
+            int exIdx = headerRow.Count;
+            int eyIdx = exIdx + 1;
+            
+            headerRow.Add("AttributeCode");
+            headerRow.Add("SearchPath");
 
             var outRows = new List<List<string>>
             {
@@ -333,12 +334,12 @@ namespace T1Sync
                 for (int i = 0; i < boundary; i++)
                     leadingVals.Add(i < srcRow.Count ? srcRow[i] : "");
 
-                // Row a: source row with the leading cells dropped, padded to ≥ EY.
+                // Row a: source row with the leading cells dropped, padded to match header length
                 var rowA = new List<string>(srcRow);
                 if (boundary > 0)
                     rowA.RemoveRange(0, Math.Min(boundary, rowA.Count));
                 rowA.Insert(0, "ASSET");
-                while (rowA.Count <= eyIdx) rowA.Add("");
+                while (rowA.Count < headerRow.Count) rowA.Add("");
                 outRows.Add(rowA);
 
                 // One row b per non-empty (non-"NULL") leading cell.
@@ -383,6 +384,8 @@ namespace T1Sync
 
         public string Template2Flat(string xlsxPath, string sheet, bool assetTypeOnly = false)
         {
+            if (File.Exists(xlsxPath)) File.Delete(xlsxPath);
+
             var (assets, attrCodesOrdered) = ReadCsvBrief();
 
             // When assetTypeOnly is true, drop every AttributeCode column except
@@ -427,12 +430,13 @@ namespace T1Sync
             else
             {
                 // No existing sheet — create one with the brief layout.
-                // Column order: AttributeCode columns lead (one per distinct code
+                // Column order: LineType leads, then AttributeCode columns (one per distinct code
                 // collected from ATTRIBUTE rows, regardless of LevelNumber);
                 // followed by the nominated direct fields with AssetRegisterName
                 // and AssetNumber forced to the front.
                 ws = wb.Worksheets.Add(sheetName);
                 var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
+                briefCols.Add(("", "", "", "", "A", "LineType"));
                 foreach (var code in attrCodesOrdered)
                     briefCols.Add(("Attribute", "", "", "", "A", code));
                 foreach (var f in OrderNominatedFields(_nominatedFields))
@@ -464,7 +468,9 @@ namespace T1Sync
                 {
                     var (kind, level, header) = layout[i];
                     string? val = null;
-                    if (kind == "" && !string.IsNullOrEmpty(header))
+                    if (header == "LineType")
+                        val = "ASSET";
+                    else if (kind == "" && !string.IsNullOrEmpty(header))
                         asset.Fields.TryGetValue(header, out val);
                     else if (kind == "Attribute" && string.IsNullOrEmpty(level))
                         asset.Attributes.TryGetValue(header, out val);

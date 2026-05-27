@@ -91,18 +91,15 @@ namespace T1Sync
         private static void CsvDemo()
         {
             const string csvSource = @"c:\temp\flat.csv";
-            const string outXlsx   = @"c:\temp\upload.xlsx";
+            const string outXlsx   = @"c:\temp\flat2.xlsx";
             const string outCsv    = @"c:\temp\upload_missing.csv";
             const string sheet     = "s0";
 
-            if (File.Exists(outXlsx)) File.Delete(outXlsx);
-            if (File.Exists(outCsv))  File.Delete(outCsv);
-
             var t = Trans.FromConfig(csvSource);
             //t.Template2Flat(outXlsx, sheet);
-            //t.Template2Flat(outXlsx, sheet, assetTypeOnly: true);
-            t.Flat2Import(csvSource, outCsv);
-            //t.HighlightLeaf(outXlsx, sheet);
+            t.Template2Flat(outXlsx, sheet, assetTypeOnly: true);
+            //t.Flat2Import(csvSource, outCsv);
+            //t.HighlightLeaf(@"https://maroondahcc.sharepoint.com/sites/AssetsWorkspace/Shared%20Documents/Asset%20Management/AssetRegister/AssetRegisterTest.xlsx?web=1", "sheet1");
 
             Debug.WriteLine($"CSV → {outXlsx}");
         }
