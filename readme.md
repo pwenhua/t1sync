@@ -5,12 +5,23 @@ NuGet install ClosedXML
 NuGet install Microsoft.Data.SqlClient
 
 #
-For Claude Code
 
-I am thinking unify excel and csv, Excel Application can open online csv?
+Done — argparse _main() removed, replaced with Trans.py:
 
-Yes — Excel.Application.Workbooks.Open on a SharePoint/OneDrive URL works for .csv too (same Office auth path as .xlsx), but Excel applies type inference on import (strips leading zeros, auto-converts dates), which is exactly what your existing ReadCsv avoids. To keep CSVs lossless you'd need Workbooks.OpenText with every column flagged as Text (xlTextFormat = 2), which is workable but more code per call.
 
-My recommendation: for unifying online support, don't route CSVs through Excel — instead, when an online URL ends in .csv, download it to a temp file (HttpClient with the existing SharePoint auth cookie, or Excel.Workbooks.Open(...).SaveAs(localCsv); .Close(false) as a quick-and-dirty path) and feed it through the existing ReadCsv. That keeps the type-safety story uniform: xlsx → Excel COM (cells as values), csv → string parser (cells as strings), with the only branching being on extension. The tradeoff is one extra hop for online CSVs vs. opening them directly in Excel.
+if __name__ == "__main__":
+    import fire
+    fire.Fire(Trans.from_config())
+Once you pip install fire, every method on the instance is directly callable:
 
-Want me to sketch that out?
+
+python Trans.py csv2xlsx        c:/temp/thin.csv "Tree"
+python Trans.py template2thin   c:/temp/template.csv c:/temp/thin.csv --asset_type_only
+python Trans.py thin2import     c:/temp/thin.csv c:/temp/import.csv
+python Trans.py save_meta_to_json c:/temp/template.csv c:/temp/meta.json "Tree/Street Tree"
+python Trans.py --help lists all methods; python Trans.py csv2xlsx -- --help shows that specific method's args.
+
+The Trans.from_config() factory runs once at startup, so nominated_fields is loaded a single time and shared across whichever method you invoke. The class-based API (used by test.py and Form1.cs) is untouched.
+
+Heads-up: fire isn't installed in your current env yet — pip install fire to enable the CLI. The class API works without it.
+

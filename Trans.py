@@ -44,12 +44,15 @@
 #       the proposed `sheet_name` is already taken, "1", "2"… is appended
 #       until a free name is found.
 #
-# CLI (see __main__ at bottom):
-#   python Trans.py template2thin    <source.csv> <output.csv> [--asset-type-only]
+# CLI via python-fire (`pip install fire`). Pass the method name as the
+# first argument; Fire auto-routes to the matching instance method:
+#   python Trans.py template2thin    <source.csv> <output.csv> [--asset_type_only]
 #   python Trans.py thin2import      <source.csv> <output.csv>
 #   python Trans.py save_meta_to_csv <source.csv> <output.csv>
 #   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
 #   python Trans.py csv2xlsx         <source.csv> <sheet_name>
+# `python Trans.py --help` lists every method; append `-- --help` after a
+# method name for its own argument help.
 #
 # Nominated direct fields are loaded once from config.json's top-level
 # "nominated_fields" array — see Trans.from_config.
@@ -472,50 +475,7 @@ class Trans:
         return columns
 
 
-def _main(argv: list[str] | None = None) -> int:
-    import argparse
-
-    parser = argparse.ArgumentParser(prog="Trans.py", description=__doc__)
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("template2thin", help="source CSV -> thin CSV")
-    p.add_argument("source"); p.add_argument("output")
-    p.add_argument("--asset-type-only", action="store_true",
-                   help="keep only the ASSET_TYPE attribute column")
-
-    p = sub.add_parser("thin2import", help="thin CSV -> T1 bulk-import CSV")
-    p.add_argument("source"); p.add_argument("output")
-
-    p = sub.add_parser("save_meta_to_csv", help="source CSV -> 6-row-header meta CSV")
-    p.add_argument("source"); p.add_argument("output")
-
-    p = sub.add_parser("save_meta_to_json", help="source CSV -> meta JSON")
-    p.add_argument("source"); p.add_argument("output"); p.add_argument("node_name")
-
-    p = sub.add_parser("csv2xlsx", help="CSV -> xlsx sheet (auto-increment name on collision)")
-    p.add_argument("source"); p.add_argument("sheet_name")
-
-    args = parser.parse_args(argv)
-    t = Trans.from_config()
-
-    if args.cmd == "template2thin":
-        out = t.template2thin(args.source, args.output, asset_type_only=args.asset_type_only)
-    elif args.cmd == "thin2import":
-        out = t.thin2import(args.source, args.output)
-    elif args.cmd == "save_meta_to_csv":
-        out = t.save_meta_to_csv(args.source, args.output)
-    elif args.cmd == "save_meta_to_json":
-        out = t.save_meta_to_json(args.source, args.output, args.node_name)
-    elif args.cmd == "csv2xlsx":
-        out = t.csv2xlsx(args.source, args.sheet_name)
-    else:
-        parser.error(f"unknown command: {args.cmd}")
-        return 2
-
-    print(f"wrote {out}")
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(_main())
+    import fire
+    fire.Fire(Trans.from_config())
 
