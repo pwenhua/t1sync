@@ -47,19 +47,21 @@ def t1client_demo() -> None:
     print(f"extract_asset done: {path}")
 
 
-def trans_demo() -> None: 
-     # CSV → meta (JSON + 6-row-header Excel sheet).
-    # t.save_meta_to_json(meta_json, node_name)
-    # t.save_meta_to_excel(meta_xlsx, node_name)
-    # print(f"CSV → meta: {meta_json}  +  {meta_xlsx}")
+def trans_demo() -> None:
+    # Trans is stateless apart from nominated_fields (loaded from config.json);
+    # each method takes the source CSV path as its first argument. Prefer the
+    # CLI in Trans.py __main__ for one-off invocations.
+    t = Trans.from_config()
 
-    t = Trans.from_config(r"c:\temp\template08.xlsx")   
+    # CSV → meta (JSON + 6-row-header CSV).
+    # t.save_meta_to_json(r"c:\temp\template.csv", r"c:\temp\csv-meta.json", "Tree/Street Tree")
+    # t.save_meta_to_csv(r"c:\temp\template.csv", r"c:\temp\csv-meta.csv")
 
-    # CSV → flat Excel (every AttributeCode → its own column).
-    t.template2_flat(r"c:\temp\upload.flat08", "flat08")
-    # t.template2_flat(out_xlsx, sheet, asset_type_only=True)
-    # t.flat2import(csv_source, out_csv)
-    print(f"done")
+    # CSV → flat CSV (every AttributeCode → its own column).
+    t.template2_flat(r"c:\temp\template.csv", r"c:\temp\flat.csv", asset_type_only=True)
+    # t.template2_flat(r"c:\temp\template.csv", r"c:\temp\flat.csv")
+    # t.flat2import(r"c:\temp\flat.csv", r"c:\temp\import.csv")
+    print("done")
 
 
 if __name__ == "__main__":

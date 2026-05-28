@@ -17,17 +17,21 @@
 //                            (AttributeCode, LevelNumber) slot of the most
 //                            recent ASSET above.
 //
-// What this class produces (each line is a public method):
-//   ParseMeta / SaveMetaToJson / SaveMetaToExcel
-//     CSV → hierarchical meta dict (same shape T1Client.ParseAssetsMeta
-//     emits) and on disk as JSON / a 6-row-header xlsx.
-//   Template2Flat(xlsx, sheet, assetTypeOnly = false)
-//     Source template CSV → flat xlsx. Collapses each asset's ASSET + N
-//     ATTRIBUTE rows into a single row, with one column per AttributeCode
-//     (cell value = that attribute's SearchPath) plus one column per
-//     nominated direct field. No LineType column — the flat shape is
-//     editable as-is. assetTypeOnly=true keeps only the ASSET_TYPE
-//     attribute column.
+// Trans is a pure CSV-in / CSV-out pipeline — no Excel involvement. The
+// class is stateless apart from the nominated-direct-fields list loaded
+// from config.json; every method takes the source CSV path as its first
+// argument. Public methods:
+//   ParseMeta(sourceCsv) / SaveMetaToJson(sourceCsv, jsonPath, nodeName) /
+//   SaveMetaToCsv(sourceCsv, outputCsv)
+//     Source CSV → hierarchical meta dict, then on disk as JSON or as a
+//     6-row-header CSV (kind / code / level / suffix / dataType / header).
+//   Template2Flat(sourceCsv, outputCsv, assetTypeOnly = false)
+//     Source CSV → flat CSV. Collapses each asset's ASSET + N ATTRIBUTE
+//     rows into a single row, with one column per AttributeCode (cell
+//     value = that attribute's SearchPath) plus one column per nominated
+//     direct field. Output is a plain CSV: one column-header row + one
+//     payload row per asset; no LineType column. assetTypeOnly=true keeps
+//     only the ASSET_TYPE attribute column.
 //   Flat2Import(sourceCsv, outputCsv)
 //     Flat CSV → T1 bulk-import CSV. Reverses Template2Flat: re-adds the
 //     LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
@@ -44,18 +48,15 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
-using ClosedXML.Excel;
 
 namespace T1Sync
 {
     public class Trans
     {
-        private readonly string _csvPath;
         private readonly List<string> _nominatedFields = new();
 
-        public Trans(string csvPath, params string[] nominatedFields)
+        public Trans(params string[] nominatedFields)
         {
-            _csvPath = csvPath;
             if (nominatedFields != null) _nominatedFields.AddRange(nominatedFields);
         }
 
@@ -64,12 +65,10 @@ namespace T1Sync
         /// top-level `nominated_fields` array in config.json. Shared across
         /// services — no service parameter required.
         /// </summary>
-        public static Trans FromConfig(
-            string csvPath,
-            string configPath = T1Client_Interop.DefaultConfigPath)
+        public static Trans FromConfig(string configPath = T1Client_Interop.DefaultConfigPath)
         {
             var fields = LoadNominatedFromConfig(configPath);
-            return new Trans(csvPath, fields.ToArray());
+            return new Trans(fields.ToArray());
         }
 
         private static List<string> LoadNominatedFromConfig(string configPath)
@@ -95,9 +94,9 @@ namespace T1Sync
 
         // ---------- CSV → hierarchical meta dict ----------
 
-        public Dictionary<string, object> ParseMeta()
+        public Dictionary<string, object> ParseMeta(string sourceCsvPath)
         {
-            var rows = ReadCsv(_csvPath);
+            var rows = ReadCsv(sourceCsvPath);
             if (rows.Count < 2)
             {
                 return new Dictionary<string, object>
@@ -222,22 +221,33 @@ namespace T1Sync
 
         // ---------- meta dict → JSON file ----------
 
-        public string SaveMetaToJson(string jsonPath, string nodeName)
+        public string SaveMetaToJson(string sourceCsvPath, string jsonPath, string nodeName)
         {
-            var meta = ParseMeta();
+            var meta = ParseMeta(sourceCsvPath);
             var wrapped = new Dictionary<string, object> { [nodeName] = meta };
             var options = new JsonSerializerOptions { WriteIndented = true };
+            var dir = Path.GetDirectoryName(jsonPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             File.WriteAllText(jsonPath, JsonSerializer.Serialize(wrapped, options), Encoding.UTF8);
             return jsonPath;
         }
 
-        // ---------- meta dict → Excel workbook (mirrors T1Client.SaveMetaToExcel) ----------
+        // ---------- meta dict → 6-row-header CSV ----------
 
-        public string SaveMetaToExcel(string xlsxPath, string nodeName)
+        public string SaveMetaToCsv(string sourceCsvPath, string outputCsvPath)
         {
-            var meta = ParseMeta();
-            var wrapped = new Dictionary<string, object> { [nodeName] = meta };
-            return SaveMetaToExcelStatic(xlsxPath, wrapped);
+            var dir = Path.GetDirectoryName(outputCsvPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            var columns = BuildMetaColumns(ParseMeta(sourceCsvPath));
+            using var sw = new StreamWriter(outputCsvPath, false, Encoding.UTF8);
+            sw.WriteLine(EscapeCsvRow(columns.Select(c => c.Item1)));  // kind
+            sw.WriteLine(EscapeCsvRow(columns.Select(c => c.Item2)));  // AttributeCode
+            sw.WriteLine(EscapeCsvRow(columns.Select(c => c.Item3)));  // level
+            sw.WriteLine(EscapeCsvRow(columns.Select(c => c.Item4)));  // suffix
+            sw.WriteLine(EscapeCsvRow(columns.Select(c => c.Item5)));  // dataType
+            sw.WriteLine(EscapeCsvRow(columns.Select(c => c.Item6)));  // header (caption)
+            return outputCsvPath;
         }
 
         // ---------- Flat2Import: flat CSV → T1 bulk-import CSV ----------
@@ -362,7 +372,7 @@ namespace T1Sync
             }));
         }
 
-        // ---------- Template2Flat: source CSV → flat xlsx ----------
+        // ---------- Template2Flat: source CSV → flat CSV ----------
         //
         // The source template stores one asset across many CSV rows (one
         // LineType=ASSET row + 0..N LineType=ATTRIBUTE rows). This method
@@ -375,20 +385,15 @@ namespace T1Sync
         // SearchPath. Captioned sub-fields (Userfield1, SelectionType2, …)
         // are NOT exploded into columns — this is the "brief" view.
         //
-        // Output is a 6-row-header xlsx (kind / code / level / suffix /
-        // dataType / header), data starts at row 7. No LineType column —
+        // Output is a CSV with exactly two sections: row 1 = column header
+        // (AttributeCode names followed by nominated direct field names),
+        // row 2+ = one payload row per asset. No LineType column —
         // Flat2Import re-adds it. assetTypeOnly=true keeps only the
         // ASSET_TYPE attribute column (case-insensitive match).
-        public string Template2Flat(string xlsxPath, string sheet, bool assetTypeOnly = false)
+        public string Template2Flat(string sourceCsvPath, string outputCsvPath, bool assetTypeOnly = false)
         {
-            if (File.Exists(xlsxPath)) File.Delete(xlsxPath);
+            var (assets, attrCodesOrdered) = ReadCsvBrief(sourceCsvPath);
 
-            var (assets, attrCodesOrdered) = ReadCsvBrief();
-
-            // When assetTypeOnly is true, drop every AttributeCode column except
-            // ASSET_TYPE (matched case-insensitively so "Asset_Type"/"asset_type"
-            // also count). Default false keeps the original behaviour: every
-            // distinct AttributeCode in the source gets its own column.
             if (assetTypeOnly)
             {
                 attrCodesOrdered = attrCodesOrdered
@@ -396,95 +401,51 @@ namespace T1Sync
                     .ToList();
             }
 
-            var dir = Path.GetDirectoryName(xlsxPath);
+            // Column order: AttributeCode columns lead (one per distinct code
+            // from ATTRIBUTE rows, regardless of LevelNumber), then nominated
+            // direct fields with AssetRegisterName/AssetNumber forced to the
+            // front. No LineType — Flat2Import re-adds it.
+            var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
+            foreach (var code in attrCodesOrdered)
+                briefCols.Add(("Attribute", "", "", "", "A", code));
+            foreach (var f in OrderNominatedFields(_nominatedFields))
+                briefCols.Add(("", "", "", "", "A", f));
+
+            var dir = Path.GetDirectoryName(outputCsvPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
-            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
+            using var sw = new StreamWriter(outputCsvPath, false, Encoding.UTF8);
 
-            var sheetName = MetaSchema.SanitizeSheetName(sheet);
-            IXLWorksheet ws;
-            List<(string Kind, string Level, string Header)> layout;
+            // Single column-header row.
+            sw.WriteLine(EscapeCsvRow(briefCols.Select(c => c.Header)));
 
-            if (wb.Worksheets.Contains(sheetName))
+            // One payload row per asset:
+            //   kind=""        + header → direct field         (asset.Fields)
+            //   kind="Attribute" + level=""  → AttributeCode scalar (asset.Attributes)
+            foreach (var asset in assets)
             {
-                // Sheet already exists (e.g. previously initialized by SaveMetaToExcel).
-                // Reuse its 6-row header as the column layout — captioned-attribute
-                // columns get left blank below ("brief" = ignore internal levels).
-                ws = wb.Worksheet(sheetName);
-                var lastCol = ws.LastColumnUsed();
-                int maxCol = lastCol?.ColumnNumber() ?? 0;
-                layout = new List<(string, string, string)>(maxCol);
-                for (int i = 1; i <= maxCol; i++)
+                var row = new List<string>(briefCols.Count);
+                foreach (var c in briefCols)
                 {
-                    layout.Add((
-                        ws.Cell(1, i).GetString() ?? "",   // kind
-                        ws.Cell(3, i).GetString() ?? "",   // level
-                        ws.Cell(6, i).GetString() ?? ""    // header / caption
-                    ));
-                }
-            }
-            else
-            {
-                // No existing sheet — create one with the brief layout.
-                // Column order: AttributeCode columns lead (one per distinct
-                // code from ATTRIBUTE rows, regardless of LevelNumber),
-                // followed by the nominated direct fields with
-                // AssetRegisterName and AssetNumber forced to the front.
-                // LineType is NOT written — it's added back only when
-                // Flat2Import generates the bulk-import CSV.
-                ws = wb.Worksheets.Add(sheetName);
-                var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
-                foreach (var code in attrCodesOrdered)
-                    briefCols.Add(("Attribute", "", "", "", "A", code));
-                foreach (var f in OrderNominatedFields(_nominatedFields))
-                    briefCols.Add(("", "", "", "", "A", f));
-
-                for (int i = 0; i < briefCols.Count; i++)
-                {
-                    var c = briefCols[i];
-                    ws.Cell(1, i + 1).Value = c.Kind;
-                    ws.Cell(2, i + 1).Value = c.Code;
-                    ws.Cell(3, i + 1).Value = c.Level;
-                    ws.Cell(4, i + 1).Value = c.Suffix;
-                    ws.Cell(5, i + 1).Value = c.DataType;
-                    ws.Cell(6, i + 1).Value = c.Header;
-                    ws.Column(i + 1).Style.NumberFormat.Format = MetaSchema.NumberFormatFor(c.DataType);
-                }
-                layout = briefCols.Select(c => (c.Kind, c.Level, c.Header)).ToList();
-            }
-
-            // Data rows start at row 7 — one per asset.
-            //   kind=""        + header         → direct field         (asset.Fields)
-            //   kind="Attribute" + level=""     → AttributeCode scalar (asset.Attributes)
-            //   kind="Attribute" + level="…"    → captioned, leave blank ("brief")
-            for (int r = 0; r < assets.Count; r++)
-            {
-                var asset = assets[r];
-                int rowNum = 7 + r;
-                for (int i = 0; i < layout.Count; i++)
-                {
-                    var (kind, level, header) = layout[i];
                     string? val = null;
-                    if (kind == "" && !string.IsNullOrEmpty(header))
-                        asset.Fields.TryGetValue(header, out val);
-                    else if (kind == "Attribute" && string.IsNullOrEmpty(level))
-                        asset.Attributes.TryGetValue(header, out val);
-
-                    if (!string.IsNullOrEmpty(val)) ws.Cell(rowNum, i + 1).Value = val;
+                    if (c.Kind == "" && !string.IsNullOrEmpty(c.Header))
+                        asset.Fields.TryGetValue(c.Header, out val);
+                    else if (c.Kind == "Attribute" && string.IsNullOrEmpty(c.Level))
+                        asset.Attributes.TryGetValue(c.Header, out val);
+                    row.Add(val ?? "");
                 }
+                sw.WriteLine(EscapeCsvRow(row));
             }
 
-            wb.SaveAs(xlsxPath);
-            return xlsxPath;
+            return outputCsvPath;
         }
 
         // Walks the source CSV, grouping each LineType=ASSET row with its
         // following LineType=ATTRIBUTE rows into one AssetRecord. Returns
         // (assets, ordered list of distinct AttributeCodes by first appearance).
-        private (List<AssetRecord> Assets, List<string> AttrCodes) ReadCsvBrief()
+        private (List<AssetRecord> Assets, List<string> AttrCodes) ReadCsvBrief(string sourceCsvPath)
         {
-            var rows = ReadCsv(_csvPath);
+            var rows = ReadCsv(sourceCsvPath);
             var assets = new List<AssetRecord>();
             var attrCodesOrdered = new List<string>();
             var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -562,49 +523,6 @@ namespace T1Sync
             return ordered;
         }
 
-        private static string SaveMetaToExcelStatic(string xlsxPath, Dictionary<string, object> meta)
-        {
-            var dir = Path.GetDirectoryName(xlsxPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
-
-            if (wb.Worksheets.Contains("Sheet"))
-                wb.Worksheets.Delete("Sheet");
-
-            foreach (var kvp in meta)
-            {
-                var nodeName = kvp.Key;
-                var sheetName = UniqueSheetName(wb, nodeName);
-                var ws = wb.Worksheets.Add(sheetName);
-                var columns = BuildMetaColumns(kvp.Value);
-
-                for (int i = 0; i < columns.Count; i++)
-                {
-                    var col = columns[i];
-                    ws.Cell(1, i + 1).Value = col.Item1;   // kind
-                    ws.Cell(2, i + 1).Value = col.Item2;   // AttributeCode
-                    ws.Cell(3, i + 1).Value = col.Item3;   // level
-                    ws.Cell(4, i + 1).Value = col.Item4;   // suffix
-                    ws.Cell(5, i + 1).Value = col.Item5;   // dataType
-                    ws.Cell(6, i + 1).Value = col.Item6;   // header (caption)
-
-                    var format = col.Item5 switch
-                    {
-                        "N" => "General",
-                        "D" => "yyyy-mm-dd",
-                        _   => "@",
-                    };
-                    ws.Column(i + 1).Style.NumberFormat.Format = format;
-                }
-            }
-
-            if (!wb.Worksheets.Any()) wb.Worksheets.Add("Sheet");
-
-            wb.SaveAs(xlsxPath);
-            return xlsxPath;
-        }
-
         // Thin pass-through to the shared MetaSchema.BuildColumns helper —
         // guarantees byte-identical column layout to T1Client_Interop / T1Client_ClosedXML.
         private static List<(string, string, string, string, string, string)> BuildMetaColumns(object nodeMetaObj)
@@ -613,22 +531,6 @@ namespace T1Sync
             var columns = new List<(string, string, string, string, string, string)>(typed.Count);
             foreach (var c in typed) columns.Add((c.Kind, c.Code, c.Level, c.Suffix, c.DataType, c.Header));
             return columns;
-        }
-
-        // Thin pass-through to MetaSchema (single source of truth for sheet naming).
-        private static string SanitizeSheetName(string name) => MetaSchema.SanitizeSheetName(name);
-
-        private static string UniqueSheetName(XLWorkbook wb, string baseName)
-        {
-            var name = SanitizeSheetName(baseName);
-            if (!wb.Worksheets.Contains(name)) return name;
-            var stem = name.Length > 29 ? name.Substring(0, 29) : name;
-            for (int i = 1; i < 100; i++)
-            {
-                var candidate = stem + i.ToString("D2");
-                if (!wb.Worksheets.Contains(candidate)) return candidate;
-            }
-            throw new InvalidOperationException($"Could not allocate unique sheet name for '{baseName}'");
         }
 
         // ---------- minimal CSV reader (handles quoted fields with embedded commas / quotes) ----------

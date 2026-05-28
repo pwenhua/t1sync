@@ -74,29 +74,22 @@ namespace T1Sync
 
         private static void CsvToMetaDemo()
         {
-            const string csvSource = "ASSET_Export_25052026-011611.csv";
-            const string nodeName  = "Tree/Street Tree";
-            const string metaJson  = @"c:\temp\csv-meta.json";
-            const string metaXlsx  = @"c:\temp\csv-meta.xlsx";
-
             // nominated_fields comes from the top-level "nominated_fields" array in config.json.
-            var t = Trans.FromConfig(csvSource);
-            t.SaveMetaToJson(metaJson, nodeName);
-            t.SaveMetaToExcel(metaXlsx, nodeName);
-            Debug.WriteLine($"CSV → meta: {metaJson}  +  {metaXlsx}");
+            var t = Trans.FromConfig();
+            t.SaveMetaToJson(@"c:\temp\template.csv", @"c:\temp\csv-meta.json", "Tree/Street Tree");
+            t.SaveMetaToCsv(@"c:\temp\template.csv", @"c:\temp\csv-meta.csv");
         }
 
-        // CSV → Excel transform via Template2Flat (6-row header, every AttributeCode
-        // → its own column). Pass assetTypeOnly: true to keep only the ASSET_TYPE
-        // attribute column. Flat2Import is the CSV → CSV variant.
+        // CSV → CSV via Template2Flat: 6-row header + one row per asset, every
+        // AttributeCode its own column (cell value = SearchPath). assetTypeOnly:
+        // true keeps only the ASSET_TYPE column. Flat2Import walks it back to
+        // the T1 bulk-import shape.
         private static void CsvDemo()
-        { 
-
-            var t = Trans.FromConfig(@"c:\temp\template.csv");
-            //t.Template2Flat(outXlsx, sheet);
-            t.Template2Flat(@"c:\temp\flat.xlsx", "09", assetTypeOnly: true);
-            //t.Flat2Import(@"c:\temp\flat_office.csv", @"c:\temp\import_office.csv");
-             
+        {
+            var t = Trans.FromConfig();
+            //t.Template2Flat(@"c:\temp\template.csv", @"c:\temp\flat.csv");
+            t.Template2Flat(@"c:\temp\template.csv", @"c:\temp\flat.csv", assetTypeOnly: true);
+            //t.Flat2Import(@"c:\temp\flat.csv", @"c:\temp\import.csv");
         }
     }
 }

@@ -18,21 +18,32 @@
 #                            row. Each fills a single (AttributeCode,
 #                            LevelNumber) slot of the most recent ASSET row.
 #
-# Public methods:
-#   parse_meta / save_meta_to_json / save_meta_to_excel
-#       CSV → hierarchical meta dict, JSON, or 6-row-header xlsx.
-#   template2_flat(xlsx, sheet, asset_type_only=False)
-#       Source template CSV → flat xlsx. Collapses each asset's ASSET + N
-#       ATTRIBUTE rows into a single row, with one column per AttributeCode
-#       (cell value = that attribute's SearchPath) plus one column per
-#       nominated direct field. No LineType column — the flat shape is
-#       editable as-is. asset_type_only=True keeps only the ASSET_TYPE
-#       attribute column.
+# Trans is a pure CSV-in / CSV-out pipeline — no Excel involvement. The
+# class is stateless apart from the nominated-direct-fields list loaded
+# from config.json; every method takes the source CSV path as its first
+# argument. Public methods:
+#   parse_meta(source_csv) / save_meta_to_json(source_csv, json, node_name)
+#   / save_meta_to_csv(source_csv, output_csv)
+#       Source CSV → hierarchical meta dict, then on disk as JSON or as a
+#       6-row-header CSV (kind / code / level / suffix / dataType / header).
+#   template2_flat(source_csv, output_csv, asset_type_only=False)
+#       Source CSV → flat CSV. Collapses each asset's ASSET + N ATTRIBUTE
+#       rows into a single row, with one column per AttributeCode (cell
+#       value = that attribute's SearchPath) plus one column per nominated
+#       direct field. Output is a plain CSV: one column-header row + one
+#       payload row per asset; no LineType column. asset_type_only=True
+#       keeps only the ASSET_TYPE attribute column.
 #   flat2import(source_csv, output_csv)
 #       Flat CSV → T1 bulk-import CSV. Reverses template2_flat: re-adds the
 #       LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 #       per non-empty AttributeCode value, in the shape T1's bulk-import
 #       accepts.
+#
+# CLI (see __main__ at bottom):
+#   python Trans.py template2_flat <source.csv> <output.csv> [--asset-type-only]
+#   python Trans.py flat2import    <source.csv> <output.csv>
+#   python Trans.py save_meta_to_csv  <source.csv> <output.csv>
+#   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
 #
 # Nominated direct fields are loaded once from config.json's top-level
 # "nominated_fields" array — see Trans.from_config.
@@ -44,17 +55,15 @@ import json
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
-INVALID_SHEET_CHARS = set(":\\/?*[]")
 
 
 class Trans:
-    def __init__(self, csv_path: str | Path, *nominated_fields: str):
-        self._csv_path = Path(csv_path)
+    def __init__(self, *nominated_fields: str):
         self._nominated_fields: list[str] = [f for f in nominated_fields if f]
 
     # ---- factory: read nominated_fields from config.json top-level ----
     @classmethod
-    def from_config(cls, csv_path: str | Path, config_path: str | Path = CONFIG_PATH) -> "Trans":
+    def from_config(cls, config_path: str | Path = CONFIG_PATH) -> "Trans":
         fields: list[str] = []
         try:
             with open(config_path, "r", encoding="utf-8") as f:
@@ -64,11 +73,12 @@ class Trans:
                 fields = [s for s in nf if isinstance(s, str) and s]
         except Exception:
             pass
-        return cls(csv_path, *fields)
+        return cls(*fields)
 
     # ---- common CSV reading ----
-    def _read_csv(self) -> list[list[str]]:
-        with open(self._csv_path, "r", encoding="utf-8", newline="") as f:
+    @staticmethod
+    def _read_csv(csv_path: str | Path) -> list[list[str]]:
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
             return [row for row in csv.reader(f)]
 
     @staticmethod
@@ -81,8 +91,8 @@ class Trans:
 
     # ---------- parse_meta (hierarchical) ----------
 
-    def parse_meta(self) -> dict:
-        rows = self._read_csv()
+    def parse_meta(self, source_csv_path: str | Path) -> dict:
+        rows = self._read_csv(source_csv_path)
         if len(rows) < 2:
             return {"fields": {}, "attributes": {}}
 
@@ -166,46 +176,27 @@ class Trans:
 
     # ---------- save_meta_to_json ----------
 
-    def save_meta_to_json(self, json_path: str | Path, node_name: str) -> Path:
-        meta = self.parse_meta()
-        wrapped = {node_name: meta}
+    def save_meta_to_json(self, source_csv_path: str | Path, json_path: str | Path, node_name: str) -> Path:
+        wrapped = {node_name: self.parse_meta(source_csv_path)}
         path = Path(json_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(wrapped, f, indent=2, ensure_ascii=False)
         return path
 
-    # ---------- save_meta_to_excel (full 6-row header, captioned cols shown blank) ----------
+    # ---------- save_meta_to_csv (6-row-header CSV, no data rows) ----------
 
-    def save_meta_to_excel(self, xlsx_path: str | Path, node_name: str) -> Path:
-        from openpyxl import Workbook, load_workbook
-        from openpyxl.utils import get_column_letter
-
-        meta = self.parse_meta()
-        path = Path(xlsx_path)
+    def save_meta_to_csv(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
+        path = Path(output_csv_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        wb = load_workbook(path) if path.exists() else Workbook()
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-
-        sheet_name = self._unique_sheet_name(wb, node_name)
-        ws = wb.create_sheet(sheet_name)
-        columns = self._build_meta_columns(meta)
-        for i, c in enumerate(columns, start=1):
-            kind, code, level, suffix, dt, header = c
-            ws.cell(row=1, column=i, value=kind)
-            ws.cell(row=2, column=i, value=code)
-            ws.cell(row=3, column=i, value=level)
-            ws.cell(row=4, column=i, value=suffix)
-            ws.cell(row=5, column=i, value=dt)
-            ws.cell(row=6, column=i, value=header)
-            ws.column_dimensions[get_column_letter(i)].number_format = self._number_format_for(dt)
-
-        wb.save(path)
+        columns = self._build_meta_columns(self.parse_meta(source_csv_path))
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for row_idx in range(6):
+                writer.writerow([c[row_idx] for c in columns])
         return path
 
-    # ---------- template2_flat: source CSV → flat xlsx ----------
+    # ---------- template2_flat: source CSV → flat CSV ----------
     #
     # The source template stores one asset across many CSV rows (one
     # LineType=ASSET row + 0..N LineType=ATTRIBUTE rows). This method
@@ -218,24 +209,21 @@ class Trans:
     # SearchPath. Captioned sub-fields (Userfield1, SelectionType2, …) are
     # NOT exploded into columns — this is the "brief" view.
     #
-    # Output is a 6-row-header xlsx (kind / code / level / suffix / dataType
-    # / header), data starts at row 7. No LineType column — flat2import
-    # re-adds it. asset_type_only=True keeps only the ASSET_TYPE attribute
-    # column (case-insensitive).
+    # Output is a plain CSV: row 1 = column header (AttributeCode names
+    # followed by nominated direct field names), row 2+ = one payload row
+    # per asset. No LineType column — flat2import re-adds it.
+    # asset_type_only=True keeps only the ASSET_TYPE attribute column
+    # (case-insensitive).
 
-    def template2_flat(self, xlsx_path: str | Path, sheet: str,
+    def template2_flat(self, source_csv_path: str | Path, output_csv_path: str | Path,
                        asset_type_only: bool = False) -> Path:
-        from openpyxl import Workbook, load_workbook
-        from openpyxl.utils import get_column_letter
-
-        # Walk CSV: each ASSET line opens a new asset; following ATTRIBUTE lines
-        # add (code → SearchPath) to that asset.
-        rows = self._read_csv()
+        # Walk CSV: each ASSET line opens a new asset; following ATTRIBUTE
+        # lines add (code → SearchPath) to that asset.
+        rows = self._read_csv(source_csv_path)
         if len(rows) < 2:
-            return Path(xlsx_path)
+            return Path(output_csv_path)
 
-        header_line = rows[1]
-        hi = self._header_idx(header_line)
+        hi = self._header_idx(rows[1])
         line_type_idx = hi.get("LineType", -1)
         attr_code_idx = hi.get("AttributeCode", -1)
         search_path_idx = hi.get("SearchPath", -1)
@@ -272,61 +260,32 @@ class Trans:
             attr_codes_ordered = [c for c in attr_codes_ordered
                                   if c.lower() == "asset_type"]
 
-        path = Path(xlsx_path)
+        # Column layout: AttributeCode columns lead (one per distinct code from
+        # ATTRIBUTE rows, regardless of LevelNumber); then nominated direct
+        # fields, with AssetRegisterName and AssetNumber forced to the front.
+        brief_cols: list[tuple[str, str, str, str, str, str]] = []
+        for code in attr_codes_ordered:
+            brief_cols.append(("Attribute", "", "", "", "A", code))
+        for f in self._order_nominated_fields(self._nominated_fields):
+            brief_cols.append(("", "", "", "", "A", f))
+
+        path = Path(output_csv_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        wb = load_workbook(path) if path.exists() else Workbook()
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-
-        sheet_name = self._sanitize_sheet_name(sheet)
-        if sheet_name in wb.sheetnames:
-            # Reuse layout from row 1 / row 3 / row 6.
-            ws = wb[sheet_name]
-            max_col = ws.max_column
-            layout = []
-            for c in range(1, max_col + 1):
-                kind = str(ws.cell(row=1, column=c).value or "")
-                level = str(ws.cell(row=3, column=c).value or "")
-                header = str(ws.cell(row=6, column=c).value or "")
-                layout.append((kind, level, header))
-        else:
-            # Fresh sheet — brief layout. AttributeCode columns lead (one per
-            # distinct code from ATTRIBUTE rows, regardless of LevelNumber);
-            # then nominated direct fields, with AssetRegisterName and
-            # AssetNumber forced to the front. No LineType column — it's
-            # re-added only when flat2import generates the bulk-import CSV.
-            ws = wb.create_sheet(sheet_name)
-            brief_cols = []
-            for code in attr_codes_ordered:
-                brief_cols.append(("Attribute", "", "", "", "A", code))
-            for f in self._order_nominated_fields(self._nominated_fields):
-                brief_cols.append(("", "", "", "", "A", f))
-            for i, c in enumerate(brief_cols, start=1):
-                kind, code, level, suffix, dt, header = c
-                ws.cell(row=1, column=i, value=kind)
-                ws.cell(row=2, column=i, value=code)
-                ws.cell(row=3, column=i, value=level)
-                ws.cell(row=4, column=i, value=suffix)
-                ws.cell(row=5, column=i, value=dt)
-                ws.cell(row=6, column=i, value=header)
-                ws.column_dimensions[get_column_letter(i)].number_format = self._number_format_for(dt)
-            layout = [(c[0], c[2], c[5]) for c in brief_cols]
-
-        # Data starts at row 7 — one row per asset.
-        #   kind=""        + header         → direct field         (asset.fields)
-        #   kind="Attribute" + level=""     → AttributeCode scalar (asset.attributes)
-        #   kind="Attribute" + level="…"    → captioned, leave blank
-        for r, asset in enumerate(assets):
-            for i, (kind, level, header) in enumerate(layout, start=1):
-                val = None
-                if kind == "" and header:
-                    val = asset["fields"].get(header)
-                elif kind == "Attribute" and not level:
-                    val = asset["attributes"].get(header)
-                if val:
-                    ws.cell(row=7 + r, column=i, value=val)
-
-        wb.save(path)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            # Single column-header row.
+            writer.writerow([c[5] for c in brief_cols])
+            # One payload row per asset.
+            for asset in assets:
+                data_row: list[str] = []
+                for kind, _code, level, _suffix, _dt, header in brief_cols:
+                    val = ""
+                    if kind == "" and header:
+                        val = asset["fields"].get(header, "") or ""
+                    elif kind == "Attribute" and not level:
+                        val = asset["attributes"].get(header, "") or ""
+                    data_row.append(val)
+                writer.writerow(data_row)
         return path
 
     # ---------- flat2import: flat CSV → T1 bulk-import CSV ----------
@@ -471,23 +430,46 @@ class Trans:
                     columns.append(("Attribute", attr_code, f"level_{level_key}", suffix, leaf_dt, caption))
         return columns
 
-    @staticmethod
-    def _sanitize_sheet_name(name: str) -> str:
-        cleaned = "".join("_" if c in INVALID_SHEET_CHARS else c for c in (name or ""))
-        return cleaned[:31] or "Sheet"
 
-    @staticmethod
-    def _unique_sheet_name(wb, base_name: str) -> str:
-        name = Trans._sanitize_sheet_name(base_name)
-        if name not in wb.sheetnames:
-            return name
-        stem = name[:29]
-        for i in range(1, 100):
-            candidate = f"{stem}{i:02d}"
-            if candidate not in wb.sheetnames:
-                return candidate
-        raise ValueError(f"Could not allocate unique sheet name for {base_name!r}")
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
 
-    @staticmethod
-    def _number_format_for(dt: str) -> str:
-        return {"N": "General", "D": "yyyy-mm-dd"}.get(dt, "@")
+    parser = argparse.ArgumentParser(prog="Trans.py", description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("template2_flat", help="source CSV -> flat CSV")
+    p.add_argument("source"); p.add_argument("output")
+    p.add_argument("--asset-type-only", action="store_true",
+                   help="keep only the ASSET_TYPE attribute column")
+
+    p = sub.add_parser("flat2import", help="flat CSV -> T1 bulk-import CSV")
+    p.add_argument("source"); p.add_argument("output")
+
+    p = sub.add_parser("save_meta_to_csv", help="source CSV -> 6-row-header meta CSV")
+    p.add_argument("source"); p.add_argument("output")
+
+    p = sub.add_parser("save_meta_to_json", help="source CSV -> meta JSON")
+    p.add_argument("source"); p.add_argument("output"); p.add_argument("node_name")
+
+    args = parser.parse_args(argv)
+    t = Trans.from_config()
+
+    if args.cmd == "template2_flat":
+        out = t.template2_flat(args.source, args.output, asset_type_only=args.asset_type_only)
+    elif args.cmd == "flat2import":
+        out = t.flat2import(args.source, args.output)
+    elif args.cmd == "save_meta_to_csv":
+        out = t.save_meta_to_csv(args.source, args.output)
+    elif args.cmd == "save_meta_to_json":
+        out = t.save_meta_to_json(args.source, args.output, args.node_name)
+    else:
+        parser.error(f"unknown command: {args.cmd}")
+        return 2
+
+    print(f"wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
+
