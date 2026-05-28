@@ -37,6 +37,11 @@
 //     LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 //     per non-empty AttributeCode value, in the shape T1's bulk-import
 //     accepts.
+//   Csv2Xlsx(csvPath, sheetName)
+//     Convenience: load a CSV as a worksheet in the same-named xlsx
+//     (csvPath with .xlsx extension). Existing workbook is reused. If the
+//     proposed `sheetName` is already taken, "1", "2"… is appended until
+//     a free name is found.
 //
 // Nominated direct fields are loaded once from the top-level
 // "nominated_fields" array in config.json — see Trans.FromConfig.
@@ -48,6 +53,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using ClosedXML.Excel;
 
 namespace T1Sync
 {
@@ -357,6 +363,40 @@ namespace T1Sync
                 sw.WriteLine(EscapeCsvRow(row));
 
             return outputCsvPath;
+        }
+
+        // ---------- Csv2Xlsx: load CSV as a worksheet in the same-named xlsx ----------
+        //
+        // Output path is csvPath with the .xlsx extension; if the workbook
+        // already exists it's reused and the CSV is appended as a new sheet.
+        // If `sheetName` is already taken, "1", "2"… is appended until a
+        // free name is found.
+        public string Csv2Xlsx(string csvPath, string sheetName)
+        {
+            var xlsxPath = Path.ChangeExtension(csvPath, ".xlsx");
+            var rows = ReadCsv(csvPath);
+
+            using var wb = File.Exists(xlsxPath) ? new XLWorkbook(xlsxPath) : new XLWorkbook();
+            if (wb.Worksheets.Contains("Sheet")) wb.Worksheets.Delete("Sheet");
+
+            var actualName = sheetName;
+            int n = 1;
+            while (wb.Worksheets.Contains(actualName))
+            {
+                actualName = sheetName + n;
+                n++;
+            }
+
+            var ws = wb.Worksheets.Add(actualName);
+            for (int r = 0; r < rows.Count; r++)
+            {
+                var row = rows[r];
+                for (int c = 0; c < row.Count; c++)
+                    ws.Cell(r + 1, c + 1).Value = row[c];
+            }
+
+            wb.SaveAs(xlsxPath);
+            return xlsxPath;
         }
 
         // Minimal CSV escaper: wrap field in double quotes if it contains

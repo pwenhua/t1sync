@@ -38,12 +38,18 @@
 #       LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 #       per non-empty AttributeCode value, in the shape T1's bulk-import
 #       accepts.
+#   csv2xlsx(csv_path, sheet_name)
+#       Convenience: load a CSV as a worksheet in the same-named xlsx
+#       (csv_path with .xlsx extension). Existing workbook is reused. If
+#       the proposed `sheet_name` is already taken, "1", "2"… is appended
+#       until a free name is found.
 #
 # CLI (see __main__ at bottom):
-#   python Trans.py template2thin <source.csv> <output.csv> [--asset-type-only]
-#   python Trans.py thin2import    <source.csv> <output.csv>
-#   python Trans.py save_meta_to_csv  <source.csv> <output.csv>
+#   python Trans.py template2thin    <source.csv> <output.csv> [--asset-type-only]
+#   python Trans.py thin2import      <source.csv> <output.csv>
+#   python Trans.py save_meta_to_csv <source.csv> <output.csv>
 #   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
+#   python Trans.py csv2xlsx         <source.csv> <sheet_name>
 #
 # Nominated direct fields are loaded once from config.json's top-level
 # "nominated_fields" array — see Trans.from_config.
@@ -383,6 +389,41 @@ class Trans:
                 writer.writerow(row)
         return path
 
+    # ---------- csv2xlsx: load CSV as a worksheet in the same-named xlsx ----------
+    #
+    # Output path is csv_path with the .xlsx extension; if the workbook
+    # already exists it's reused and the CSV is appended as a new sheet.
+    # If `sheet_name` is already taken, "1", "2"… is appended until a free
+    # name is found.
+
+    def csv2xlsx(self, csv_path: str | Path, sheet_name: str) -> Path:
+        from openpyxl import Workbook, load_workbook
+
+        src = Path(csv_path)
+        xlsx_path = src.with_suffix(".xlsx")
+        rows = self._read_csv(src)
+
+        if xlsx_path.exists():
+            wb = load_workbook(xlsx_path)
+        else:
+            wb = Workbook()
+            if "Sheet" in wb.sheetnames:
+                del wb["Sheet"]
+
+        actual = sheet_name
+        n = 1
+        while actual in wb.sheetnames:
+            actual = f"{sheet_name}{n}"
+            n += 1
+
+        ws = wb.create_sheet(actual)
+        for r, row in enumerate(rows, start=1):
+            for c, val in enumerate(row, start=1):
+                ws.cell(row=r, column=c, value=val)
+
+        wb.save(xlsx_path)
+        return xlsx_path
+
     # ---------- shared helpers (mirror MetaSchema / C# Trans privates) ----------
 
     @staticmethod
@@ -451,6 +492,9 @@ def _main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("save_meta_to_json", help="source CSV -> meta JSON")
     p.add_argument("source"); p.add_argument("output"); p.add_argument("node_name")
 
+    p = sub.add_parser("csv2xlsx", help="CSV -> xlsx sheet (auto-increment name on collision)")
+    p.add_argument("source"); p.add_argument("sheet_name")
+
     args = parser.parse_args(argv)
     t = Trans.from_config()
 
@@ -462,6 +506,8 @@ def _main(argv: list[str] | None = None) -> int:
         out = t.save_meta_to_csv(args.source, args.output)
     elif args.cmd == "save_meta_to_json":
         out = t.save_meta_to_json(args.source, args.output, args.node_name)
+    elif args.cmd == "csv2xlsx":
+        out = t.csv2xlsx(args.source, args.sheet_name)
     else:
         parser.error(f"unknown command: {args.cmd}")
         return 2
