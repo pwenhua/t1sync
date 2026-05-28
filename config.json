@@ -42,6 +42,9 @@
         "Description",
         "Details",
         "ShortDescription",
+        "TemplateAssetNumber",
+        "GisLayer",
+        "GisId",
         "Status",
         "OperatingStatus"
     ],

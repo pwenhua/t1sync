@@ -90,18 +90,13 @@ namespace T1Sync
         // → its own column). Pass assetTypeOnly: true to keep only the ASSET_TYPE
         // attribute column. Flat2Import is the CSV → CSV variant.
         private static void CsvDemo()
-        {
-            const string csvSource = @"c:\temp\flat.csv";
-            const string outXlsx   = @"c:\temp\flat2.xlsx";
-            const string outCsv    = @"c:\temp\upload_missing.csv";
-            const string sheet     = "s0";
+        { 
 
-            var t = Trans.FromConfig(csvSource);
+            var t = Trans.FromConfig(@"c:\temp\template.csv");
             //t.Template2Flat(outXlsx, sheet);
-            t.Template2Flat(outXlsx, sheet, assetTypeOnly: true);
-            //t.Flat2Import(csvSource, outCsv);
-
-            Debug.WriteLine($"CSV → {outXlsx}");
+            t.Template2Flat(@"c:\temp\flat.xlsx", "09", assetTypeOnly: true);
+            //t.Flat2Import(@"c:\temp\flat_office.csv", @"c:\temp\import_office.csv");
+             
         }
     }
 }
