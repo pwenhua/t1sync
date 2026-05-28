@@ -80,16 +80,16 @@ namespace T1Sync
             t.SaveMetaToCsv(@"c:\temp\template.csv", @"c:\temp\csv-meta.csv");
         }
 
-        // CSV → CSV via Template2Flat: 6-row header + one row per asset, every
+        // CSV → CSV via Template2Thin: 6-row header + one row per asset, every
         // AttributeCode its own column (cell value = SearchPath). assetTypeOnly:
-        // true keeps only the ASSET_TYPE column. Flat2Import walks it back to
+        // true keeps only the ASSET_TYPE column. Thin2Import walks it back to
         // the T1 bulk-import shape.
         private static void CsvDemo()
         {
             var t = Trans.FromConfig();
-            //t.Template2Flat(@"c:\temp\template.csv", @"c:\temp\flat.csv");
-            t.Template2Flat(@"c:\temp\template.csv", @"c:\temp\flat.csv", assetTypeOnly: true);
-            //t.Flat2Import(@"c:\temp\flat.csv", @"c:\temp\import.csv");
+            //t.Template2Thin(@"c:\temp\template.csv", @"c:\temp\thin.csv");
+            t.Template2Thin(@"c:\temp\template.csv", @"c:\temp\thin.csv", assetTypeOnly: true);
+            //t.Thin2Import(@"c:\temp\thin.csv", @"c:\temp\import.csv");
         }
     }
 }

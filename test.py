@@ -57,10 +57,10 @@ def trans_demo() -> None:
     # t.save_meta_to_json(r"c:\temp\template.csv", r"c:\temp\csv-meta.json", "Tree/Street Tree")
     # t.save_meta_to_csv(r"c:\temp\template.csv", r"c:\temp\csv-meta.csv")
 
-    # CSV → flat CSV (every AttributeCode → its own column).
-    t.template2_flat(r"c:\temp\template.csv", r"c:\temp\flat.csv", asset_type_only=True)
-    # t.template2_flat(r"c:\temp\template.csv", r"c:\temp\flat.csv")
-    # t.flat2import(r"c:\temp\flat.csv", r"c:\temp\import.csv")
+    # CSV → thin CSV (every AttributeCode → its own column).
+    t.template2thin(r"c:\temp\template.csv", r"c:\temp\thin.csv", asset_type_only=True)
+    # t.template2thin(r"c:\temp\template.csv", r"c:\temp\thin.csv")
+    # t.thin2import(r"c:\temp\thin.csv", r"c:\temp\import.csv")
     print("done")
 
 

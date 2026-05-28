@@ -1,7 +1,7 @@
-// Trans.cs — convert a T1 ASSET CSV "template" export into flat,
-// import-ready shapes. The source CSV groups every asset across multiple
-// rows (one ASSET row + N ATTRIBUTE rows); Trans flattens that for editing
-// and walks it back to bulk-import shape.
+// Trans.cs — convert a T1 ASSET CSV "template" export into a thin,
+// import-ready shape. The source CSV groups every asset across multiple
+// rows (one ASSET row + N ATTRIBUTE rows); Trans thins that out (one row
+// per asset) for editing and walks it back to bulk-import shape.
 //
 // Source CSV format (T1 download template):
 //   Row 1  — system-reserved literal "FORMAT ASSET, STANDARD 1.0, …"
@@ -25,15 +25,15 @@
 //   SaveMetaToCsv(sourceCsv, outputCsv)
 //     Source CSV → hierarchical meta dict, then on disk as JSON or as a
 //     6-row-header CSV (kind / code / level / suffix / dataType / header).
-//   Template2Flat(sourceCsv, outputCsv, assetTypeOnly = false)
-//     Source CSV → flat CSV. Collapses each asset's ASSET + N ATTRIBUTE
+//   Template2Thin(sourceCsv, outputCsv, assetTypeOnly = false)
+//     Source CSV → thin CSV. Collapses each asset's ASSET + N ATTRIBUTE
 //     rows into a single row, with one column per AttributeCode (cell
 //     value = that attribute's SearchPath) plus one column per nominated
 //     direct field. Output is a plain CSV: one column-header row + one
 //     payload row per asset; no LineType column. assetTypeOnly=true keeps
 //     only the ASSET_TYPE attribute column.
-//   Flat2Import(sourceCsv, outputCsv)
-//     Flat CSV → T1 bulk-import CSV. Reverses Template2Flat: re-adds the
+//   Thin2Import(sourceCsv, outputCsv)
+//     Thin CSV → T1 bulk-import CSV. Reverses Template2Thin: re-adds the
 //     LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 //     per non-empty AttributeCode value, in the shape T1's bulk-import
 //     accepts.
@@ -250,15 +250,15 @@ namespace T1Sync
             return outputCsvPath;
         }
 
-        // ---------- Flat2Import: flat CSV → T1 bulk-import CSV ----------
+        // ---------- Thin2Import: thin CSV → T1 bulk-import CSV ----------
         //
-        // Reverses Template2Flat. Each input row holds one asset's data in
-        // a flat shape (AttributeCode columns first, then direct fields);
+        // Reverses Template2Thin. Each input row holds one asset's data in
+        // a thin shape (AttributeCode columns first, then direct fields);
         // T1's bulk import wants that asset split back into one ASSET row
         // (carrying the direct fields) plus one ATTRIBUTE row per non-empty
         // AttributeCode (carrying that code + its SearchPath value).
         //
-        // Input header (saved-as CSV from Template2Flat):
+        // Input header (saved-as CSV from Template2Thin):
         //   <AttributeCode 1> … <AttributeCode N> | AssetRegisterName, AssetNumber, …
         //   ─── leading attribute columns ───       ─── nominated direct fields ───
         //
@@ -273,7 +273,7 @@ namespace T1Sync
         //
         // Column matching is case-insensitive; the leading/nominated boundary
         // is the position of `AssetRegisterName` in the input header.
-        public string Flat2Import(string sourceCsvPath, string outputCsvPath)
+        public string Thin2Import(string sourceCsvPath, string outputCsvPath)
         {
             const string formatStr = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT";
 
@@ -372,7 +372,7 @@ namespace T1Sync
             }));
         }
 
-        // ---------- Template2Flat: source CSV → flat CSV ----------
+        // ---------- Template2Thin: source CSV → thin CSV ----------
         //
         // The source template stores one asset across many CSV rows (one
         // LineType=ASSET row + 0..N LineType=ATTRIBUTE rows). This method
@@ -388,9 +388,9 @@ namespace T1Sync
         // Output is a CSV with exactly two sections: row 1 = column header
         // (AttributeCode names followed by nominated direct field names),
         // row 2+ = one payload row per asset. No LineType column —
-        // Flat2Import re-adds it. assetTypeOnly=true keeps only the
+        // Thin2Import re-adds it. assetTypeOnly=true keeps only the
         // ASSET_TYPE attribute column (case-insensitive match).
-        public string Template2Flat(string sourceCsvPath, string outputCsvPath, bool assetTypeOnly = false)
+        public string Template2Thin(string sourceCsvPath, string outputCsvPath, bool assetTypeOnly = false)
         {
             var (assets, attrCodesOrdered) = ReadCsvBrief(sourceCsvPath);
 
@@ -404,7 +404,7 @@ namespace T1Sync
             // Column order: AttributeCode columns lead (one per distinct code
             // from ATTRIBUTE rows, regardless of LevelNumber), then nominated
             // direct fields with AssetRegisterName/AssetNumber forced to the
-            // front. No LineType — Flat2Import re-adds it.
+            // front. No LineType — Thin2Import re-adds it.
             var briefCols = new List<(string Kind, string Code, string Level, string Suffix, string DataType, string Header)>();
             foreach (var code in attrCodesOrdered)
                 briefCols.Add(("Attribute", "", "", "", "A", code));

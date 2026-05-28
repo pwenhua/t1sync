@@ -1,9 +1,9 @@
 # Trans.py — Python mirror of the C# Trans class.
 #
-# Converts a T1 ASSET CSV "template" export into flat, import-ready shapes.
-# The source CSV groups every asset across multiple rows (one ASSET row +
-# N ATTRIBUTE rows); Trans flattens that for editing and walks it back to
-# bulk-import shape.
+# Converts a T1 ASSET CSV "template" export into a thin, import-ready
+# shape. The source CSV groups every asset across multiple rows (one ASSET
+# row + N ATTRIBUTE rows); Trans thins that out (one row per asset) for
+# editing and walks it back to bulk-import shape.
 #
 # Source CSV format (T1 download template):
 #   Row 1  — system-reserved literal "FORMAT ASSET, STANDARD 1.0, …"
@@ -26,22 +26,22 @@
 #   / save_meta_to_csv(source_csv, output_csv)
 #       Source CSV → hierarchical meta dict, then on disk as JSON or as a
 #       6-row-header CSV (kind / code / level / suffix / dataType / header).
-#   template2_flat(source_csv, output_csv, asset_type_only=False)
-#       Source CSV → flat CSV. Collapses each asset's ASSET + N ATTRIBUTE
+#   template2thin(source_csv, output_csv, asset_type_only=False)
+#       Source CSV → thin CSV. Collapses each asset's ASSET + N ATTRIBUTE
 #       rows into a single row, with one column per AttributeCode (cell
 #       value = that attribute's SearchPath) plus one column per nominated
 #       direct field. Output is a plain CSV: one column-header row + one
 #       payload row per asset; no LineType column. asset_type_only=True
 #       keeps only the ASSET_TYPE attribute column.
-#   flat2import(source_csv, output_csv)
-#       Flat CSV → T1 bulk-import CSV. Reverses template2_flat: re-adds the
+#   thin2import(source_csv, output_csv)
+#       Thin CSV → T1 bulk-import CSV. Reverses template2thin: re-adds the
 #       LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 #       per non-empty AttributeCode value, in the shape T1's bulk-import
 #       accepts.
 #
 # CLI (see __main__ at bottom):
-#   python Trans.py template2_flat <source.csv> <output.csv> [--asset-type-only]
-#   python Trans.py flat2import    <source.csv> <output.csv>
+#   python Trans.py template2thin <source.csv> <output.csv> [--asset-type-only]
+#   python Trans.py thin2import    <source.csv> <output.csv>
 #   python Trans.py save_meta_to_csv  <source.csv> <output.csv>
 #   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
 #
@@ -196,7 +196,7 @@ class Trans:
                 writer.writerow([c[row_idx] for c in columns])
         return path
 
-    # ---------- template2_flat: source CSV → flat CSV ----------
+    # ---------- template2thin: source CSV → thin CSV ----------
     #
     # The source template stores one asset across many CSV rows (one
     # LineType=ASSET row + 0..N LineType=ATTRIBUTE rows). This method
@@ -211,11 +211,11 @@ class Trans:
     #
     # Output is a plain CSV: row 1 = column header (AttributeCode names
     # followed by nominated direct field names), row 2+ = one payload row
-    # per asset. No LineType column — flat2import re-adds it.
+    # per asset. No LineType column — thin2import re-adds it.
     # asset_type_only=True keeps only the ASSET_TYPE attribute column
     # (case-insensitive).
 
-    def template2_flat(self, source_csv_path: str | Path, output_csv_path: str | Path,
+    def template2thin(self, source_csv_path: str | Path, output_csv_path: str | Path,
                        asset_type_only: bool = False) -> Path:
         # Walk CSV: each ASSET line opens a new asset; following ATTRIBUTE
         # lines add (code → SearchPath) to that asset.
@@ -288,15 +288,15 @@ class Trans:
                 writer.writerow(data_row)
         return path
 
-    # ---------- flat2import: flat CSV → T1 bulk-import CSV ----------
+    # ---------- thin2import: thin CSV → T1 bulk-import CSV ----------
     #
-    # Reverses template2_flat. Each input row holds one asset's data in a
-    # flat shape (AttributeCode columns first, then direct fields); T1's
+    # Reverses template2thin. Each input row holds one asset's data in a
+    # thin shape (AttributeCode columns first, then direct fields); T1's
     # bulk import wants that asset split back into one ASSET row (carrying
     # the direct fields) plus one ATTRIBUTE row per non-empty AttributeCode
     # (carrying that code + its SearchPath value).
     #
-    # Input header (saved-as CSV from template2_flat):
+    # Input header (saved-as CSV from template2thin):
     #   <AttributeCode 1> … <AttributeCode N> | AssetRegisterName, AssetNumber, …
     #   ─── leading attribute columns ───       ─── nominated direct fields ───
     #
@@ -312,7 +312,7 @@ class Trans:
     # Column matching is case-insensitive; the leading/nominated boundary is
     # the position of `AssetRegisterName` in the input header.
 
-    def flat2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
+    def thin2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
         FORMAT_STR = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
 
         with open(source_csv_path, "r", encoding="utf-8", newline="") as f:
@@ -437,12 +437,12 @@ def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="Trans.py", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("template2_flat", help="source CSV -> flat CSV")
+    p = sub.add_parser("template2thin", help="source CSV -> thin CSV")
     p.add_argument("source"); p.add_argument("output")
     p.add_argument("--asset-type-only", action="store_true",
                    help="keep only the ASSET_TYPE attribute column")
 
-    p = sub.add_parser("flat2import", help="flat CSV -> T1 bulk-import CSV")
+    p = sub.add_parser("thin2import", help="thin CSV -> T1 bulk-import CSV")
     p.add_argument("source"); p.add_argument("output")
 
     p = sub.add_parser("save_meta_to_csv", help="source CSV -> 6-row-header meta CSV")
@@ -454,10 +454,10 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     t = Trans.from_config()
 
-    if args.cmd == "template2_flat":
-        out = t.template2_flat(args.source, args.output, asset_type_only=args.asset_type_only)
-    elif args.cmd == "flat2import":
-        out = t.flat2import(args.source, args.output)
+    if args.cmd == "template2thin":
+        out = t.template2thin(args.source, args.output, asset_type_only=args.asset_type_only)
+    elif args.cmd == "thin2import":
+        out = t.thin2import(args.source, args.output)
     elif args.cmd == "save_meta_to_csv":
         out = t.save_meta_to_csv(args.source, args.output)
     elif args.cmd == "save_meta_to_json":
