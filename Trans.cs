@@ -640,6 +640,7 @@ namespace T1Sync
             var current = new StringBuilder();
             bool inQuotes = false;
 
+            using var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
             int ch;
             while ((ch = reader.Read()) != -1)
             {
