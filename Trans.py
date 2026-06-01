@@ -324,7 +324,7 @@ class Trans:
     def thin2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
         FORMAT_STR = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
 
-        with open(source_csv_path, "r", encoding="utf-8", newline="") as f:
+        with open(source_csv_path, "r", encoding="utf-8-sig", newline="") as f:
             rows = [row for row in csv.reader(f)]
 
         has_format = bool(rows) and len(rows[0]) > 0 and rows[0][0] == FORMAT_STR
