@@ -37,6 +37,17 @@
 //     LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 //     per non-empty AttributeCode value, in the shape T1's bulk-import
 //     accepts.
+//   Template2Flat(sourceCsv, outputCsv)
+//     Like Template2Thin, but also exposes the ASSET_TYPE captioned
+//     sub-fields (AssetAttributeUserfield<N>, AssetAttributeSelectionType<N>)
+//     as their own columns whenever any asset has a value there. Columns
+//     are named "ASSET_TYPE/<level>/<suffix>". Payload rows are sorted by
+//     the ASSET_TYPE SearchPath.
+//   Flat2Import(sourceCsv, outputCsv)
+//     Reverses Template2Flat. Behaves like Thin2Import for plain attribute
+//     columns; for ASSET_TYPE captioned columns it re-folds them into the
+//     ATTRIBUTE row's AssetAttributeUserfield<N> / SelectionType<N> cells,
+//     emitting one ATTRIBUTE row per ASSET_TYPE level with values.
 //   Csv2Xlsx(csvPath, sheetName)
 //     Convenience: load a CSV as a worksheet in the same-named xlsx
 //     (csvPath with .xlsx extension). Existing workbook is reused. If the
@@ -365,6 +376,189 @@ namespace T1Sync
             return outputCsvPath;
         }
 
+        // ---------- Flat2Import: flat CSV (with ASSET_TYPE captions) → T1 bulk-import CSV ----------
+        //
+        // Reverses Template2Flat. Same shape as Thin2Import for plain
+        // attribute columns; captioned ASSET_TYPE columns (header pattern
+        // "ASSET_TYPE/<level>/<suffix>") are re-folded into the
+        // AssetAttributeUserfield<N> / AssetAttributeSelectionType<N> cells of
+        // an ATTRIBUTE row carrying LevelNumber=<level>. One ATTRIBUTE row is
+        // emitted per ASSET_TYPE level that has at least one non-empty value.
+        //
+        // Output header: LineType, <nominated direct fields…>, AttributeCode,
+        // SearchPath, LevelNumber, AssetAttributeUserfield1..N,
+        // AssetAttributeSelectionType1..N (the last three groups appear only
+        // when the input has ASSET_TYPE captioned columns).
+        public string Flat2Import(string sourceCsvPath, string outputCsvPath)
+        {
+            const string formatStr = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT";
+
+            var rows = ReadCsv(sourceCsvPath);
+            bool hasFormat = rows.Count > 0 && rows[0].Count > 0 && rows[0][0] == formatStr;
+            var headerRow = hasFormat
+                ? (rows.Count > 1 ? new List<string>(rows[1]) : new List<string>())
+                : (rows.Count > 0 ? new List<string>(rows[0]) : new List<string>());
+            var dataRows = hasFormat ? rows.Skip(2).ToList() : rows.Skip(1).ToList();
+
+            // Boundary = index of AssetRegisterName. Everything before it is a
+            // "leading attribute column" — either a scalar code, or a captioned
+            // ASSET_TYPE column matching "<code>/<level>/<suffix>".
+            int boundary = 0;
+            for (int i = 0; i < headerRow.Count; i++)
+            {
+                if (string.Equals(headerRow[i], "AssetRegisterName", StringComparison.OrdinalIgnoreCase))
+                { boundary = i; break; }
+            }
+
+            var leadingCols = new List<(string Header, bool IsCaption, string Code, int Level, string Suffix)>();
+            int maxUserfieldN = 0, maxSelectionTypeN = 0;
+            for (int i = 0; i < boundary; i++)
+            {
+                var h = headerRow[i];
+                var parts = h.Split('/');
+                if (parts.Length == 3 && int.TryParse(parts[1], out int lvl))
+                {
+                    leadingCols.Add((h, true, parts[0], lvl, parts[2]));
+                    if (parts[2].StartsWith("Userfield", StringComparison.OrdinalIgnoreCase) &&
+                        int.TryParse(parts[2].Substring("Userfield".Length), out int un))
+                        maxUserfieldN = Math.Max(maxUserfieldN, un);
+                    else if (parts[2].StartsWith("SelectionType", StringComparison.OrdinalIgnoreCase) &&
+                             int.TryParse(parts[2].Substring("SelectionType".Length), out int sn))
+                        maxSelectionTypeN = Math.Max(maxSelectionTypeN, sn);
+                }
+                else
+                {
+                    leadingCols.Add((h, false, h, 0, ""));
+                }
+            }
+
+            bool hasCaptions = maxUserfieldN > 0 || maxSelectionTypeN > 0;
+
+            // Build output header.
+            var outHeader = new List<string> { "LineType" };
+            for (int i = boundary; i < headerRow.Count; i++) outHeader.Add(headerRow[i]);
+            int attrCodeIdx = outHeader.Count; outHeader.Add("AttributeCode");
+            int searchPathIdx = outHeader.Count; outHeader.Add("SearchPath");
+            int levelNumIdx = -1;
+            var userfieldIdx = new int[maxUserfieldN + 1];      // index 1..N (0 unused)
+            var selectionIdx = new int[maxSelectionTypeN + 1];
+            if (hasCaptions)
+            {
+                levelNumIdx = outHeader.Count; outHeader.Add("LevelNumber");
+                for (int n = 1; n <= maxUserfieldN; n++)
+                {
+                    userfieldIdx[n] = outHeader.Count;
+                    outHeader.Add($"AssetAttributeUserfield{n}");
+                }
+                for (int n = 1; n <= maxSelectionTypeN; n++)
+                {
+                    selectionIdx[n] = outHeader.Count;
+                    outHeader.Add($"AssetAttributeSelectionType{n}");
+                }
+            }
+
+            var outRows = new List<List<string>>
+            {
+                new List<string> { formatStr },
+                outHeader,
+            };
+
+            List<string> BlankRow() { var r = new List<string>(new string[outHeader.Count]); for (int i = 0; i < r.Count; i++) r[i] = ""; return r; }
+
+            foreach (var srcRow in dataRows)
+            {
+                // Snapshot leading + direct values.
+                var leadingVals = new List<string>(boundary);
+                for (int i = 0; i < boundary; i++)
+                    leadingVals.Add(i < srcRow.Count ? srcRow[i] : "");
+
+                // Row a: LineType=ASSET, direct fields filled.
+                var rowA = BlankRow();
+                rowA[0] = "ASSET";
+                for (int i = 0; i < headerRow.Count - boundary; i++)
+                {
+                    int srcI = boundary + i;
+                    rowA[1 + i] = srcI < srcRow.Count ? srcRow[srcI] : "";
+                }
+                outRows.Add(rowA);
+
+                // Scalar attribute rows + ASSET_TYPE caption collection.
+                string assetTypeSp = "";
+                var atByLevel = new SortedDictionary<int, Dictionary<string, string>>();
+                for (int j = 0; j < leadingCols.Count; j++)
+                {
+                    var col = leadingCols[j];
+                    var v = leadingVals[j];
+                    if (string.IsNullOrEmpty(v) || string.Equals(v, "NULL", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    bool isAssetType = string.Equals(col.Code, "ASSET_TYPE", StringComparison.OrdinalIgnoreCase);
+                    if (col.IsCaption && isAssetType)
+                    {
+                        if (!atByLevel.TryGetValue(col.Level, out var lvlDict))
+                        {
+                            lvlDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            atByLevel[col.Level] = lvlDict;
+                        }
+                        lvlDict[col.Suffix] = v;
+                    }
+                    else if (!col.IsCaption && isAssetType)
+                    {
+                        assetTypeSp = v;
+                    }
+                    else if (!col.IsCaption)
+                    {
+                        var rowB = BlankRow();
+                        rowB[0] = "ATTRIBUTE";
+                        rowB[attrCodeIdx] = col.Code;
+                        rowB[searchPathIdx] = v;
+                        outRows.Add(rowB);
+                    }
+                }
+
+                // Emit ASSET_TYPE row(s). If captioned values exist, one row per
+                // level; otherwise just a single scalar row (matching Thin2Import).
+                if (atByLevel.Count > 0)
+                {
+                    foreach (var (lvl, lvlDict) in atByLevel)
+                    {
+                        var rowB = BlankRow();
+                        rowB[0] = "ATTRIBUTE";
+                        rowB[attrCodeIdx] = "ASSET_TYPE";
+                        rowB[searchPathIdx] = assetTypeSp;
+                        if (levelNumIdx >= 0) rowB[levelNumIdx] = lvl.ToString();
+                        foreach (var (sfx, val) in lvlDict)
+                        {
+                            if (sfx.StartsWith("Userfield", StringComparison.OrdinalIgnoreCase) &&
+                                int.TryParse(sfx.Substring("Userfield".Length), out int un) &&
+                                un >= 1 && un <= maxUserfieldN)
+                                rowB[userfieldIdx[un]] = val;
+                            else if (sfx.StartsWith("SelectionType", StringComparison.OrdinalIgnoreCase) &&
+                                     int.TryParse(sfx.Substring("SelectionType".Length), out int sn) &&
+                                     sn >= 1 && sn <= maxSelectionTypeN)
+                                rowB[selectionIdx[sn]] = val;
+                        }
+                        outRows.Add(rowB);
+                    }
+                }
+                else if (!string.IsNullOrEmpty(assetTypeSp))
+                {
+                    var rowB = BlankRow();
+                    rowB[0] = "ATTRIBUTE";
+                    rowB[attrCodeIdx] = "ASSET_TYPE";
+                    rowB[searchPathIdx] = assetTypeSp;
+                    outRows.Add(rowB);
+                }
+            }
+
+            var dir = Path.GetDirectoryName(outputCsvPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            using var sw = new StreamWriter(outputCsvPath, false, Encoding.UTF8);
+            foreach (var row in outRows)
+                sw.WriteLine(EscapeCsvRow(row));
+
+            return outputCsvPath;
+        }
+
         // ---------- Csv2Xlsx: load CSV as a worksheet in the same-named xlsx ----------
         //
         // Output path is csvPath with the .xlsx extension; if the workbook
@@ -480,6 +674,110 @@ namespace T1Sync
             return outputCsvPath;
         }
 
+        // ---------- Template2Flat: source CSV → flat CSV with ASSET_TYPE captions ----------
+        //
+        // Same shape as Template2Thin, plus extra columns for the ASSET_TYPE
+        // captioned sub-fields whenever any asset has a non-empty value at
+        // some (level, suffix). Those columns sit right after the ASSET_TYPE
+        // scalar column and are named "ASSET_TYPE/<level>/<suffix>", e.g.
+        // "ASSET_TYPE/1/Userfield1". Payload rows are sorted by the
+        // ASSET_TYPE SearchPath (case-insensitive, ascending; empty last).
+        public string Template2Flat(string sourceCsvPath, string outputCsvPath)
+        {
+            var (assets, attrCodesOrdered) = ReadCsvBrief(sourceCsvPath);
+
+            // Find (level, suffix) combos that have a non-empty value in at
+            // least one asset. Sort by numeric level then suffix.
+            var slotSet = new HashSet<(int Level, string Suffix)>();
+            foreach (var asset in assets)
+            {
+                foreach (var (levelStr, suffixDict) in asset.AssetTypeCaptions)
+                {
+                    if (!int.TryParse(levelStr, out int level)) continue;
+                    foreach (var (suffix, val) in suffixDict)
+                    {
+                        if (!string.IsNullOrEmpty(val)) slotSet.Add((level, suffix));
+                    }
+                }
+            }
+            var captionSlots = slotSet.OrderBy(s => s.Level).ThenBy(s => s.Suffix, StringComparer.OrdinalIgnoreCase).ToList();
+
+            // Locate the canonical ASSET_TYPE code in the source (preserves its
+            // case). If it's missing entirely, fall back to the literal string.
+            string assetTypeCode = attrCodesOrdered.FirstOrDefault(
+                c => string.Equals(c, "ASSET_TYPE", StringComparison.OrdinalIgnoreCase)) ?? "ASSET_TYPE";
+
+            // Build column layout. Tagged so we can both render the header and
+            // look up each cell's value.
+            //   "Attr" with Code=<code>                    → asset.Attributes[code]
+            //   "Caption" with Code=ASSET_TYPE, Level, Sfx → asset.AssetTypeCaptions[level][suffix]
+            //   "Field" with Header=<field name>           → asset.Fields[name]
+            var cols = new List<(string Kind, string Header, string Code, string Level, string Suffix)>();
+            bool hasAssetType = attrCodesOrdered.Any(c => string.Equals(c, "ASSET_TYPE", StringComparison.OrdinalIgnoreCase));
+            if (hasAssetType)
+            {
+                cols.Add(("Attr", assetTypeCode, assetTypeCode, "", ""));
+                foreach (var (lvl, sfx) in captionSlots)
+                {
+                    var header = $"{assetTypeCode}/{lvl}/{sfx}";
+                    cols.Add(("Caption", header, assetTypeCode, lvl.ToString(), sfx));
+                }
+            }
+            foreach (var code in attrCodesOrdered)
+            {
+                if (string.Equals(code, "ASSET_TYPE", StringComparison.OrdinalIgnoreCase)) continue;
+                cols.Add(("Attr", code, code, "", ""));
+            }
+            foreach (var f in OrderNominatedFields(_nominatedFields))
+                cols.Add(("Field", f, "", "", ""));
+
+            // Sort assets by ASSET_TYPE SearchPath. Empty/missing sorts last
+            // and ties break on original input order.
+            var sorted = assets
+                .Select((a, i) => (Asset: a, Index: i,
+                                    Sp: a.Attributes.TryGetValue(assetTypeCode, out var s) ? s : ""))
+                .OrderBy(t => string.IsNullOrEmpty(t.Sp))
+                .ThenBy(t => t.Sp, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(t => t.Index)
+                .Select(t => t.Asset)
+                .ToList();
+
+            var dir = Path.GetDirectoryName(outputCsvPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            using var sw = new StreamWriter(outputCsvPath, false, Encoding.UTF8);
+            sw.WriteLine(EscapeCsvRow(cols.Select(c => c.Header)));
+
+            foreach (var asset in sorted)
+            {
+                var row = new List<string>(cols.Count);
+                foreach (var c in cols)
+                {
+                    string val = "";
+                    if (c.Kind == "Attr")
+                    {
+                        asset.Attributes.TryGetValue(c.Code, out var v);
+                        val = v ?? "";
+                    }
+                    else if (c.Kind == "Caption")
+                    {
+                        if (asset.AssetTypeCaptions.TryGetValue(c.Level, out var lvlDict) &&
+                            lvlDict.TryGetValue(c.Suffix, out var v))
+                            val = v;
+                    }
+                    else if (c.Kind == "Field")
+                    {
+                        asset.Fields.TryGetValue(c.Header, out var v);
+                        val = v ?? "";
+                    }
+                    row.Add(val);
+                }
+                sw.WriteLine(EscapeCsvRow(row));
+            }
+
+            return outputCsvPath;
+        }
+
         // Walks the source CSV, grouping each LineType=ASSET row with its
         // following LineType=ATTRIBUTE rows into one AssetRecord. Returns
         // (assets, ordered list of distinct AttributeCodes by first appearance).
@@ -502,6 +800,7 @@ namespace T1Sync
             int lineTypeIdx   = headerIndex.GetValueOrDefault("LineType",      -1);
             int attrCodeIdx   = headerIndex.GetValueOrDefault("AttributeCode", -1);
             int searchPathIdx = headerIndex.GetValueOrDefault("SearchPath",    -1);
+            int levelNumIdx   = headerIndex.GetValueOrDefault("LevelNumber",   -1);
 
             AssetRecord? current = null;
 
@@ -534,16 +833,57 @@ namespace T1Sync
                         current.Attributes[code] = sp;
 
                     if (seenCodes.Add(code)) attrCodesOrdered.Add(code);
+
+                    // For ASSET_TYPE, also stash any captioned sub-fields at this
+                    // level — Template2Flat exposes them as their own columns.
+                    if (string.Equals(code, "ASSET_TYPE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var levelStr = (levelNumIdx >= 0 && levelNumIdx < row.Count) ? row[levelNumIdx].Trim() : "";
+                        if (!string.IsNullOrEmpty(levelStr))
+                        {
+                            CollectAssetTypeCaptions(current, row, headerIndex, levelStr, "Userfield");
+                            CollectAssetTypeCaptions(current, row, headerIndex, levelStr, "SelectionType");
+                        }
+                    }
                 }
             }
 
             return (assets, attrCodesOrdered);
         }
 
+        private static void CollectAssetTypeCaptions(AssetRecord asset, List<string> row,
+            Dictionary<string, int> headerIndex, string levelStr, string family)
+        {
+            Dictionary<string, string>? levelDict = null;
+            for (int n = 1; n <= 20; n++)
+            {
+                var colName = $"AssetAttribute{family}{n}";
+                if (!headerIndex.TryGetValue(colName, out var idx)) continue;
+                if (idx >= row.Count) continue;
+                var value = row[idx];
+                if (string.IsNullOrEmpty(value)) continue;
+                if (levelDict == null)
+                {
+                    if (!asset.AssetTypeCaptions.TryGetValue(levelStr, out levelDict))
+                    {
+                        levelDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        asset.AssetTypeCaptions[levelStr] = levelDict;
+                    }
+                }
+                levelDict[$"{family}{n}"] = value;
+            }
+        }
+
         private class AssetRecord
         {
             public Dictionary<string, string> Fields     = new(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, string> Attributes = new(StringComparer.OrdinalIgnoreCase);
+            // ASSET_TYPE captioned values keyed [levelStr][suffix] -> value.
+            // Populated by ReadCsvBrief whenever an ATTRIBUTE row for ASSET_TYPE
+            // carries non-empty AssetAttributeUserfield<N>/SelectionType<N> cells.
+            // Used by Template2Flat; ignored by Template2Thin.
+            public Dictionary<string, Dictionary<string, string>> AssetTypeCaptions
+                = new(StringComparer.OrdinalIgnoreCase);
         }
 
         // Promote AssetRegisterName and AssetNumber to the front of the

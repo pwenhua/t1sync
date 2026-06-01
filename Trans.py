@@ -38,6 +38,17 @@
 #       LineType column and emits one "ASSET" row plus one "ATTRIBUTE" row
 #       per non-empty AttributeCode value, in the shape T1's bulk-import
 #       accepts.
+#   template2flat(source_csv, output_csv)
+#       Like template2thin, but also exposes the ASSET_TYPE captioned
+#       sub-fields (AssetAttributeUserfield<N>, AssetAttributeSelectionType<N>)
+#       as their own columns whenever any asset has a value there. Columns
+#       are named "ASSET_TYPE/<level>/<suffix>". Payload rows are sorted by
+#       the ASSET_TYPE SearchPath.
+#   flat2import(source_csv, output_csv)
+#       Reverses template2flat. Behaves like thin2import for plain attribute
+#       columns; for ASSET_TYPE captioned columns it re-folds them into the
+#       ATTRIBUTE row's AssetAttributeUserfield<N> / SelectionType<N> cells,
+#       emitting one ATTRIBUTE row per ASSET_TYPE level with values.
 #   csv2xlsx(csv_path, sheet_name)
 #       Convenience: load a CSV as a worksheet in the same-named xlsx
 #       (csv_path with .xlsx extension). Existing workbook is reused. If
@@ -48,6 +59,8 @@
 # first argument; Fire auto-routes to the matching instance method:
 #   python Trans.py template2thin    <source.csv> <output.csv> [--asset_type_only]
 #   python Trans.py thin2import      <source.csv> <output.csv>
+#   python Trans.py template2flat    <source.csv> <output.csv>
+#   python Trans.py flat2import      <source.csv> <output.csv>
 #   python Trans.py save_meta_to_csv <source.csv> <output.csv>
 #   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
 #   python Trans.py csv2xlsx         <source.csv> <sheet_name>
@@ -226,44 +239,7 @@ class Trans:
 
     def template2thin(self, source_csv_path: str | Path, output_csv_path: str | Path,
                        asset_type_only: bool = False) -> Path:
-        # Walk CSV: each ASSET line opens a new asset; following ATTRIBUTE
-        # lines add (code → SearchPath) to that asset.
-        rows = self._read_csv(source_csv_path)
-        if len(rows) < 2:
-            return Path(output_csv_path)
-
-        hi = self._header_idx(rows[1])
-        line_type_idx = hi.get("LineType", -1)
-        attr_code_idx = hi.get("AttributeCode", -1)
-        search_path_idx = hi.get("SearchPath", -1)
-
-        assets: list[dict] = []
-        attr_codes_ordered: list[str] = []
-        seen: set[str] = set()
-        current: dict | None = None
-
-        for row in rows[2:]:
-            if line_type_idx < 0 or line_type_idx >= len(row):
-                continue
-            lt = row[line_type_idx].upper()
-            if lt == "ASSET":
-                current = {"fields": {}, "attributes": {}}
-                for f in self._nominated_fields:
-                    if f in hi and hi[f] < len(row):
-                        current["fields"][f] = row[hi[f]]
-                assets.append(current)
-            elif lt == "ATTRIBUTE" and current is not None:
-                if attr_code_idx < 0 or attr_code_idx >= len(row):
-                    continue
-                code = row[attr_code_idx]
-                if not code:
-                    continue
-                sp = row[search_path_idx] if 0 <= search_path_idx < len(row) else ""
-                if code not in current["attributes"]:
-                    current["attributes"][code] = sp
-                if code not in seen:
-                    seen.add(code)
-                    attr_codes_ordered.append(code)
+        assets, attr_codes_ordered = self._read_brief(source_csv_path)
 
         if asset_type_only:
             attr_codes_ordered = [c for c in attr_codes_ordered
@@ -295,6 +271,72 @@ class Trans:
                         val = asset["attributes"].get(header, "") or ""
                     data_row.append(val)
                 writer.writerow(data_row)
+        return path
+
+    # ---------- template2flat: source CSV → flat CSV with ASSET_TYPE captions ----------
+    #
+    # Same shape as template2thin, plus extra columns for the ASSET_TYPE
+    # captioned sub-fields whenever any asset has a non-empty value at some
+    # (level, suffix). Those columns sit right after the ASSET_TYPE scalar
+    # column and are named "ASSET_TYPE/<level>/<suffix>", e.g.
+    # "ASSET_TYPE/1/Userfield1". Payload rows are sorted by the ASSET_TYPE
+    # SearchPath (case-insensitive, ascending; empty last).
+
+    def template2flat(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
+        assets, attr_codes_ordered = self._read_brief(source_csv_path)
+
+        # (level:int, suffix:str) pairs that have a non-empty value somewhere.
+        slot_set: set[tuple[int, str]] = set()
+        for a in assets:
+            for level_str, suffix_dict in a["asset_type_captions"].items():
+                if not level_str.isdigit():
+                    continue
+                level = int(level_str)
+                for suffix, val in suffix_dict.items():
+                    if val:
+                        slot_set.add((level, suffix))
+        caption_slots = sorted(slot_set, key=lambda s: (s[0], s[1].lower()))
+
+        # Preserve the source's case for ASSET_TYPE; fall back to literal.
+        asset_type_code = next(
+            (c for c in attr_codes_ordered if c.lower() == "asset_type"),
+            "ASSET_TYPE")
+        has_asset_type = any(c.lower() == "asset_type" for c in attr_codes_ordered)
+
+        # cols: list of (kind, header, code, level_str, suffix)
+        cols: list[tuple[str, str, str, str, str]] = []
+        if has_asset_type:
+            cols.append(("Attr", asset_type_code, asset_type_code, "", ""))
+            for lvl, sfx in caption_slots:
+                cols.append(("Caption", f"{asset_type_code}/{lvl}/{sfx}", asset_type_code, str(lvl), sfx))
+        for code in attr_codes_ordered:
+            if code.lower() == "asset_type":
+                continue
+            cols.append(("Attr", code, code, "", ""))
+        for fld in self._order_nominated_fields(self._nominated_fields):
+            cols.append(("Field", fld, "", "", ""))
+
+        # Sort assets by ASSET_TYPE SearchPath; empty last; ties on input order.
+        indexed = [(i, a, (a["attributes"].get(asset_type_code, "") or "")) for i, a in enumerate(assets)]
+        indexed.sort(key=lambda t: (t[2] == "", t[2].lower(), t[0]))
+        sorted_assets = [t[1] for t in indexed]
+
+        path = Path(output_csv_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([c[1] for c in cols])
+            for a in sorted_assets:
+                row: list[str] = []
+                for kind, header, code, level_str, suffix in cols:
+                    if kind == "Attr":
+                        row.append(a["attributes"].get(code, "") or "")
+                    elif kind == "Caption":
+                        lvl_dict = a["asset_type_captions"].get(level_str, {})
+                        row.append(lvl_dict.get(suffix, "") or "")
+                    else:  # Field
+                        row.append(a["fields"].get(header, "") or "")
+                writer.writerow(row)
         return path
 
     # ---------- thin2import: thin CSV → T1 bulk-import CSV ----------
@@ -392,6 +434,143 @@ class Trans:
                 writer.writerow(row)
         return path
 
+    # ---------- flat2import: flat CSV (with ASSET_TYPE captions) → T1 bulk-import CSV ----------
+    #
+    # Reverses template2flat. Same shape as thin2import for plain attribute
+    # columns; captioned ASSET_TYPE columns (header pattern
+    # "ASSET_TYPE/<level>/<suffix>") are re-folded into the
+    # AssetAttributeUserfield<N> / SelectionType<N> cells of an ATTRIBUTE row
+    # carrying LevelNumber=<level>. One ATTRIBUTE row is emitted per
+    # ASSET_TYPE level that has at least one non-empty value.
+
+    def flat2import(self, source_csv_path: str | Path, output_csv_path: str | Path) -> Path:
+        FORMAT_STR = "FORMAT ASSET, STANDARD 1.0, DEFINITION $DEFAULT"
+
+        with open(source_csv_path, "r", encoding="utf-8", newline="") as f:
+            rows = [r for r in csv.reader(f)]
+
+        has_format = bool(rows) and len(rows[0]) > 0 and rows[0][0] == FORMAT_STR
+        if has_format:
+            header_row = list(rows[1]) if len(rows) > 1 else []
+            data_rows = rows[2:]
+        else:
+            header_row = list(rows[0]) if rows else []
+            data_rows = rows[1:]
+
+        # Boundary = position of AssetRegisterName; everything before it is a
+        # leading attribute column (scalar code OR "<code>/<level>/<suffix>").
+        boundary = 0
+        for i, name in enumerate(header_row):
+            if name and name.lower() == "assetregistername":
+                boundary = i
+                break
+
+        leading_cols: list[tuple[str, bool, str, int, str]] = []  # (header, is_caption, code, level, suffix)
+        max_userfield_n = 0
+        max_selection_n = 0
+        for i in range(boundary):
+            h = header_row[i]
+            parts = h.split("/")
+            if len(parts) == 3 and parts[1].isdigit():
+                code, lvl, sfx = parts[0], int(parts[1]), parts[2]
+                leading_cols.append((h, True, code, lvl, sfx))
+                low = sfx.lower()
+                if low.startswith("userfield") and low[len("userfield"):].isdigit():
+                    max_userfield_n = max(max_userfield_n, int(low[len("userfield"):]))
+                elif low.startswith("selectiontype") and low[len("selectiontype"):].isdigit():
+                    max_selection_n = max(max_selection_n, int(low[len("selectiontype"):]))
+            else:
+                leading_cols.append((h, False, h, 0, ""))
+
+        has_captions = max_userfield_n > 0 or max_selection_n > 0
+
+        # Output header.
+        out_header: list[str] = ["LineType"]
+        out_header.extend(header_row[boundary:])
+        attr_code_idx = len(out_header); out_header.append("AttributeCode")
+        search_path_idx = len(out_header); out_header.append("SearchPath")
+        level_num_idx = -1
+        userfield_idx: list[int] = [0] * (max_userfield_n + 1)
+        selection_idx: list[int] = [0] * (max_selection_n + 1)
+        if has_captions:
+            level_num_idx = len(out_header); out_header.append("LevelNumber")
+            for n in range(1, max_userfield_n + 1):
+                userfield_idx[n] = len(out_header)
+                out_header.append(f"AssetAttributeUserfield{n}")
+            for n in range(1, max_selection_n + 1):
+                selection_idx[n] = len(out_header)
+                out_header.append(f"AssetAttributeSelectionType{n}")
+
+        out_rows: list[list[str]] = [[FORMAT_STR], out_header]
+
+        def blank_row() -> list[str]:
+            return [""] * len(out_header)
+
+        for src_row in data_rows:
+            leading_vals = [src_row[i] if i < len(src_row) else "" for i in range(boundary)]
+
+            # Row a: ASSET + direct fields.
+            row_a = blank_row()
+            row_a[0] = "ASSET"
+            for i in range(len(header_row) - boundary):
+                src_i = boundary + i
+                row_a[1 + i] = src_row[src_i] if src_i < len(src_row) else ""
+            out_rows.append(row_a)
+
+            asset_type_sp = ""
+            at_by_level: dict[int, dict[str, str]] = {}
+            for j, col in enumerate(leading_cols):
+                _h, is_caption, code, lvl, sfx = col
+                v = leading_vals[j]
+                if not v or v.upper() == "NULL":
+                    continue
+                is_asset_type = code.lower() == "asset_type"
+                if is_caption and is_asset_type:
+                    at_by_level.setdefault(lvl, {})[sfx] = v
+                elif not is_caption and is_asset_type:
+                    asset_type_sp = v
+                elif not is_caption:
+                    rb = blank_row()
+                    rb[0] = "ATTRIBUTE"
+                    rb[attr_code_idx] = code
+                    rb[search_path_idx] = v
+                    out_rows.append(rb)
+
+            if at_by_level:
+                for lvl in sorted(at_by_level):
+                    lvl_dict = at_by_level[lvl]
+                    rb = blank_row()
+                    rb[0] = "ATTRIBUTE"
+                    rb[attr_code_idx] = "ASSET_TYPE"
+                    rb[search_path_idx] = asset_type_sp
+                    if level_num_idx >= 0:
+                        rb[level_num_idx] = str(lvl)
+                    for sfx, val in lvl_dict.items():
+                        low = sfx.lower()
+                        if low.startswith("userfield") and low[len("userfield"):].isdigit():
+                            n = int(low[len("userfield"):])
+                            if 1 <= n <= max_userfield_n:
+                                rb[userfield_idx[n]] = val
+                        elif low.startswith("selectiontype") and low[len("selectiontype"):].isdigit():
+                            n = int(low[len("selectiontype"):])
+                            if 1 <= n <= max_selection_n:
+                                rb[selection_idx[n]] = val
+                    out_rows.append(rb)
+            elif asset_type_sp:
+                rb = blank_row()
+                rb[0] = "ATTRIBUTE"
+                rb[attr_code_idx] = "ASSET_TYPE"
+                rb[search_path_idx] = asset_type_sp
+                out_rows.append(rb)
+
+        path = Path(output_csv_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for row in out_rows:
+                writer.writerow(row)
+        return path
+
     # ---------- csv2xlsx: load CSV as a worksheet in the same-named xlsx ----------
     #
     # Output path is csv_path with the .xlsx extension; if the workbook
@@ -428,6 +607,73 @@ class Trans:
         return xlsx_path
 
     # ---------- shared helpers (mirror MetaSchema / C# Trans privates) ----------
+
+    def _read_brief(self, source_csv_path: str | Path) -> tuple[list[dict], list[str]]:
+        """Walk the source CSV; group each LineType=ASSET row with its
+        following LineType=ATTRIBUTE rows. Returns (assets, attr_codes_ordered).
+        Each asset is {"fields": {...}, "attributes": {code: searchpath, ...},
+        "asset_type_captions": {level_str: {suffix: value}}}.
+        ASSET_TYPE captions are always collected; consumers that don't need
+        them just ignore the field."""
+        rows = self._read_csv(source_csv_path)
+        assets: list[dict] = []
+        attr_codes_ordered: list[str] = []
+        seen: set[str] = set()
+        if len(rows) < 2:
+            return assets, attr_codes_ordered
+
+        hi = self._header_idx(rows[1])
+        line_type_idx = hi.get("LineType", -1)
+        attr_code_idx = hi.get("AttributeCode", -1)
+        search_path_idx = hi.get("SearchPath", -1)
+        level_num_idx = hi.get("LevelNumber", -1)
+
+        current: dict | None = None
+        for row in rows[2:]:
+            if line_type_idx < 0 or line_type_idx >= len(row):
+                continue
+            lt = row[line_type_idx].upper()
+            if lt == "ASSET":
+                current = {"fields": {}, "attributes": {}, "asset_type_captions": {}}
+                for f in self._nominated_fields:
+                    if f in hi and hi[f] < len(row):
+                        current["fields"][f] = row[hi[f]]
+                assets.append(current)
+            elif lt == "ATTRIBUTE" and current is not None:
+                if attr_code_idx < 0 or attr_code_idx >= len(row):
+                    continue
+                code = row[attr_code_idx]
+                if not code:
+                    continue
+                sp = row[search_path_idx] if 0 <= search_path_idx < len(row) else ""
+                if code not in current["attributes"]:
+                    current["attributes"][code] = sp
+                if code not in seen:
+                    seen.add(code)
+                    attr_codes_ordered.append(code)
+                if code.lower() == "asset_type":
+                    level_str = row[level_num_idx].strip() if 0 <= level_num_idx < len(row) else ""
+                    if level_str:
+                        self._collect_captions(current, row, hi, level_str, "Userfield")
+                        self._collect_captions(current, row, hi, level_str, "SelectionType")
+
+        return assets, attr_codes_ordered
+
+    @staticmethod
+    def _collect_captions(asset: dict, row: list[str], hi: dict[str, int],
+                          level_str: str, family: str) -> None:
+        level_dict: dict | None = None
+        for n in range(1, 21):
+            col = f"AssetAttribute{family}{n}"
+            idx = hi.get(col, -1)
+            if idx < 0 or idx >= len(row):
+                continue
+            value = row[idx]
+            if not value:
+                continue
+            if level_dict is None:
+                level_dict = asset["asset_type_captions"].setdefault(level_str, {})
+            level_dict[f"{family}{n}"] = value
 
     @staticmethod
     def _order_nominated_fields(nominated: list[str]) -> list[str]:
