@@ -565,8 +565,19 @@ namespace T1Sync
         // already exists it's reused and the CSV is appended as a new sheet.
         // If `sheetName` is already taken, "1", "2"… is appended until a
         // free name is found.
+        //
+        // Each data row's first cell also gets a hyperlink pointing at the
+        // T1 AssetMyMaintenance page for that asset, parameterised by the
+        // row's AssetRegisterName + AssetNumber values (header lookup is
+        // case-insensitive). Rows missing either value are left as plain
+        // text.
         public string Csv2Xlsx(string csvPath, string sheetName)
         {
+            const string urlTemplate =
+                "https://maroondah-build.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-build/"
+                + "AssetsCore/AssetMyMaintenance?f=$ASC.ASSET.MNT&suite=CES"
+                + "&SK.AssetRegisterName={assetregistername}&SK.KeyedAssetNumber={assetnumber}";
+
             var xlsxPath = Path.ChangeExtension(csvPath, ".xlsx");
             var rows = ReadCsv(csvPath);
 
@@ -581,12 +592,36 @@ namespace T1Sync
                 n++;
             }
 
+            // Locate AssetRegisterName / AssetNumber columns in the header row.
+            int arnCol = -1, anCol = -1;
+            if (rows.Count > 0)
+            {
+                var header = rows[0];
+                for (int i = 0; i < header.Count; i++)
+                {
+                    if (arnCol < 0 && string.Equals(header[i], "AssetRegisterName", StringComparison.OrdinalIgnoreCase))
+                        arnCol = i;
+                    if (anCol < 0 && string.Equals(header[i], "AssetNumber", StringComparison.OrdinalIgnoreCase))
+                        anCol = i;
+                }
+            }
+
             var ws = wb.Worksheets.Add(actualName);
             for (int r = 0; r < rows.Count; r++)
             {
                 var row = rows[r];
                 for (int c = 0; c < row.Count; c++)
                     ws.Cell(r + 1, c + 1).Value = row[c];
+
+                if (r == 0 || arnCol < 0 || anCol < 0) continue;
+                var arn = arnCol < row.Count ? row[arnCol] : "";
+                var an  = anCol  < row.Count ? row[anCol]  : "";
+                if (string.IsNullOrEmpty(arn) || string.IsNullOrEmpty(an)) continue;
+
+                var url = urlTemplate
+                    .Replace("{assetregistername}", Uri.EscapeDataString(arn))
+                    .Replace("{assetnumber}",      Uri.EscapeDataString(an));
+                ws.Cell(r + 1, 1).SetHyperlink(new XLHyperlink(url));
             }
 
             wb.SaveAs(xlsxPath);

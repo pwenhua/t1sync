@@ -577,9 +577,21 @@ class Trans:
     # already exists it's reused and the CSV is appended as a new sheet.
     # If `sheet_name` is already taken, "1", "2"… is appended until a free
     # name is found.
+    #
+    # Each data row's first cell also gets a hyperlink pointing at the T1
+    # AssetMyMaintenance page for that asset, parameterised by the row's
+    # AssetRegisterName + AssetNumber values (header lookup is
+    # case-insensitive). Rows missing either value are left as plain text.
 
     def csv2xlsx(self, csv_path: str | Path, sheet_name: str) -> Path:
         from openpyxl import Workbook, load_workbook
+        from urllib.parse import quote
+
+        url_template = (
+            "https://maroondah-build.t1cloud.com/T1Default/CiAnywhere/Web/MAROONDAH-build/"
+            "AssetsCore/AssetMyMaintenance?f=$ASC.ASSET.MNT&suite=CES"
+            "&SK.AssetRegisterName={assetregistername}&SK.KeyedAssetNumber={assetnumber}"
+        )
 
         src = Path(csv_path)
         xlsx_path = src.with_suffix(".xlsx")
@@ -598,10 +610,33 @@ class Trans:
             actual = f"{sheet_name}{n}"
             n += 1
 
+        # Locate AssetRegisterName / AssetNumber columns in the header row.
+        arn_col = -1
+        an_col = -1
+        if rows:
+            for i, h in enumerate(rows[0]):
+                if arn_col < 0 and h and h.lower() == "assetregistername":
+                    arn_col = i
+                if an_col < 0 and h and h.lower() == "assetnumber":
+                    an_col = i
+
         ws = wb.create_sheet(actual)
         for r, row in enumerate(rows, start=1):
             for c, val in enumerate(row, start=1):
                 ws.cell(row=r, column=c, value=val)
+
+            if r == 1 or arn_col < 0 or an_col < 0:
+                continue
+            arn = row[arn_col] if arn_col < len(row) else ""
+            an  = row[an_col]  if an_col  < len(row) else ""
+            if not arn or not an:
+                continue
+            url = (url_template
+                   .replace("{assetregistername}", quote(arn))
+                   .replace("{assetnumber}", quote(an)))
+            cell = ws.cell(row=r, column=1)
+            cell.hyperlink = url
+            cell.style = "Hyperlink"
 
         wb.save(xlsx_path)
         return xlsx_path
