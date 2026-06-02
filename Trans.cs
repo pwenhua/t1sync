@@ -53,6 +53,11 @@
 //     (csvPath with .xlsx extension). Existing workbook is reused. If the
 //     proposed `sheetName` is already taken, "1", "2"… is appended until
 //     a free name is found.
+//   Xlsx2Csv(xlsxPath, sheetName)
+//     Inverse of Csv2Xlsx: extract one sheet from the workbook to
+//     "<xlsxBaseName>_<sheetName>.csv" next to the source xlsx. The
+//     sheet-name suffix is what stops the output from clobbering the
+//     csv that produced the workbook.
 //
 // Nominated direct fields are loaded once from the top-level
 // "nominated_fields" array in config.json — see Trans.FromConfig.
@@ -626,6 +631,37 @@ namespace T1Sync
 
             wb.SaveAs(xlsxPath);
             return xlsxPath;
+        }
+
+        // ---------- Xlsx2Csv: dump one xlsx sheet to "<basename>_<sheet>.csv" ----------
+        //
+        // Inverse of Csv2Xlsx. Output sits next to the source xlsx; the
+        // sheet-name suffix avoids clobbering the csv that produced the
+        // workbook. Throws if the sheet doesn't exist.
+        public string Xlsx2Csv(string xlsxPath, string sheetName)
+        {
+            using var wb = new XLWorkbook(xlsxPath);
+            if (!wb.Worksheets.Contains(sheetName))
+                throw new ArgumentException($"Sheet '{sheetName}' not found in '{xlsxPath}'.");
+
+            var ws = wb.Worksheet(sheetName);
+            int maxRow = ws.LastRowUsed()?.RowNumber() ?? 0;
+            int maxCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
+
+            var dir = Path.GetDirectoryName(xlsxPath) ?? "";
+            var stem = Path.GetFileNameWithoutExtension(xlsxPath);
+            var csvPath = Path.Combine(dir, $"{stem}_{sheetName}.csv");
+
+            using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
+            for (int r = 1; r <= maxRow; r++)
+            {
+                var row = new List<string>(maxCol);
+                for (int c = 1; c <= maxCol; c++)
+                    row.Add(ws.Cell(r, c).GetString() ?? "");
+                sw.WriteLine(EscapeCsvRow(row));
+            }
+
+            return csvPath;
         }
 
         // Minimal CSV escaper: wrap field in double quotes if it contains

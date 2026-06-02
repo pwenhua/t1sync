@@ -54,6 +54,11 @@
 #       (csv_path with .xlsx extension). Existing workbook is reused. If
 #       the proposed `sheet_name` is already taken, "1", "2"… is appended
 #       until a free name is found.
+#   xlsx2csv(xlsx_path, sheet_name)
+#       Inverse of csv2xlsx: extract one sheet from the workbook to
+#       "<xlsx_basename>_<sheet_name>.csv" next to the source xlsx. The
+#       sheet-name suffix avoids clobbering the csv that produced the
+#       workbook.
 #
 # CLI via python-fire (`pip install fire`). Pass the method name as the
 # first argument; Fire auto-routes to the matching instance method:
@@ -64,6 +69,7 @@
 #   python Trans.py save_meta_to_csv <source.csv> <output.csv>
 #   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
 #   python Trans.py csv2xlsx         <source.csv> <sheet_name>
+#   python Trans.py xlsx2csv         <source.xlsx> <sheet_name>
 # `python Trans.py --help` lists every method; append `-- --help` after a
 # method name for its own argument help.
 #
@@ -640,6 +646,28 @@ class Trans:
 
         wb.save(xlsx_path)
         return xlsx_path
+
+    # ---------- xlsx2csv: dump one xlsx sheet to "<basename>_<sheet>.csv" ----------
+    #
+    # Inverse of csv2xlsx. Output sits next to the source xlsx; the
+    # sheet-name suffix avoids clobbering the csv that produced the
+    # workbook. Raises if the sheet doesn't exist.
+
+    def xlsx2csv(self, xlsx_path: str | Path, sheet_name: str) -> Path:
+        from openpyxl import load_workbook
+
+        src = Path(xlsx_path)
+        wb = load_workbook(src, data_only=True)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"Sheet {sheet_name!r} not found in {src}")
+        ws = wb[sheet_name]
+
+        csv_path = src.with_name(f"{src.stem}_{sheet_name}.csv")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for row in ws.iter_rows(values_only=True):
+                writer.writerow(["" if v is None else str(v) for v in row])
+        return csv_path
 
     # ---------- shared helpers (mirror MetaSchema / C# Trans privates) ----------
 
