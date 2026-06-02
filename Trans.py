@@ -662,7 +662,8 @@ class Trans:
             raise ValueError(f"Sheet {sheet_name!r} not found in {src}")
         ws = wb[sheet_name]
 
-        csv_path = src.with_name(f"{src.stem}_{sheet_name}.csv")
+        # csv_path = src.with_name(f"{src.stem}_{sheet_name}.csv")
+        csv_path = src.with_name(f"{src.stem}.csv")
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
             for row in ws.iter_rows(values_only=True):

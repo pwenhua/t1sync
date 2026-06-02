@@ -650,7 +650,7 @@ namespace T1Sync
 
             var dir = Path.GetDirectoryName(xlsxPath) ?? "";
             var stem = Path.GetFileNameWithoutExtension(xlsxPath);
-            var csvPath = Path.Combine(dir, $"{stem}_{sheetName}.csv");
+            var csvPath = Path.Combine(dir, $"{stem}.csv");
 
             using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
             for (int r = 1; r <= maxRow; r++)

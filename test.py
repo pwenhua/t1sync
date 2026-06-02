@@ -58,9 +58,15 @@ def trans_demo() -> None:
     # t.save_meta_to_csv(r"c:\temp\template.csv", r"c:\temp\csv-meta.csv")
 
     # CSV → thin CSV (every AttributeCode → its own column).
-    # t.template2thin(r"c:\temp\template11.csv", r"c:\temp\thin11.csv", asset_type_only=True)
     # t.template2thin(r"c:\temp\template.csv", r"c:\temp\thin.csv")
-    t.thin2import(r"c:\temp\thin11.csv", r"c:\temp\import11.csv")
+    # t.template2thin(r"c:\temp\template11.csv", r"c:\temp\thin11.csv", asset_type_only=True)
+    # t.thin2import(r"c:\temp\thin11.csv", r"c:\temp\import11.csv")
+
+    t.template2flat(r"c:\temp\template13.csv", r"c:\temp\flat13.csv")
+    t.csv2xlsx(r"c:\temp\flat13.csv", r"flat")
+    #t.xlsx2csv(r"c:\temp\flat12.xlsx", r"flat")
+    #t.flat2import(r"c:\temp\flat12.csv", r"c:\temp\import12.csv")
+
     print("done")
 
 
