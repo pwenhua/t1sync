@@ -70,6 +70,7 @@
 #   python Trans.py save_meta_to_json <source.csv> <output.json> <node_name>
 #   python Trans.py csv2xlsx         <source.csv> <sheet_name>
 #   python Trans.py xlsx2csv         <source.xlsx> <sheet_name>
+#   python Trans.py csvjoin          <csv1> <csv2> <output> <csv1_col1> <csv2_col2> <csv1_col3> <csv2_col4>
 # `python Trans.py --help` lists every method; append `-- --help` after a
 # method name for its own argument help.
 #
@@ -106,8 +107,12 @@ class Trans:
     # ---- common CSV reading ----
     @staticmethod
     def _read_csv(csv_path: str | Path) -> list[list[str]]:
-        with open(csv_path, "r", encoding="utf-8", newline="") as f:
-            return [row for row in csv.reader(f)]
+        try:
+            with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+                return [row for row in csv.reader(f)]
+        except UnicodeDecodeError:
+            with open(csv_path, "r", encoding="cp1252", newline="") as f:
+                return [row for row in csv.reader(f)]
 
     @staticmethod
     def _header_idx(header_line: list[str]) -> dict[str, int]:
@@ -669,6 +674,84 @@ class Trans:
             for row in ws.iter_rows(values_only=True):
                 writer.writerow(["" if v is None else str(v) for v in row])
         return csv_path
+
+    # ---------- csv2db: upload CSV to database ----------
+    #
+    # Uploads a CSV file into a database table.
+    # Drops the table if it already exists, creates it with NVARCHAR(MAX) columns,
+    # and inserts the data.
+
+    def csv2db(self, source_csv_path: str | Path, db_node_name: str, final_table_name: str) -> None:
+        import pyodbc
+
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            db_config = cfg.get("database", {}).get(db_node_name)
+            if not db_config:
+                raise ValueError(f"Database node '{db_node_name}' not found in config.json")
+            conn_str = db_config.get("connection_string")
+            if not conn_str:
+                raise ValueError(f"No connection_string found for database node '{db_node_name}'")
+            # Pyodbc requires a Driver to be specified. If missing, assume standard Windows SQL Server driver.
+            if "driver=" not in conn_str.lower():
+                conn_str = f"Driver={{SQL Server}};" + conn_str
+                if not conn_str.endswith(";"):
+                    conn_str += ";"
+        except Exception as e:
+            raise RuntimeError(f"Failed to load database config: {e}")
+
+        rows = self._read_csv(source_csv_path)
+        if not rows:
+            print(f"CSV is empty: {source_csv_path}")
+            return
+
+        header = rows[0]
+        data_rows = rows[1:]
+
+        if not header:
+            print("CSV has no header row.")
+            return
+
+        conn = pyodbc.connect(conn_str)
+        cursor = conn.cursor()
+
+        # Drop table if exists
+        try:
+            cursor.execute(f"DROP TABLE {final_table_name}")
+            cursor.commit()
+        except Exception:
+            pass
+
+        # Create table
+        cols = []
+        for i, col in enumerate(header):
+            safe_col = "".join(c for c in col if c.isalnum() or c == "_")
+            if not safe_col:
+                safe_col = f"Col{i}"
+            cols.append(f"[{safe_col}] NVARCHAR(MAX)")
+
+        create_sql = f"CREATE TABLE {final_table_name} ({', '.join(cols)})"
+        cursor.execute(create_sql)
+        cursor.commit()
+
+        # Insert data
+        if data_rows:
+            placeholders = ", ".join(["?"] * len(header))
+            insert_sql = f"INSERT INTO {final_table_name} VALUES ({placeholders})"
+            padded_rows = []
+            for row in data_rows:
+                if len(row) < len(header):
+                    padded_rows.append(row + [""] * (len(header) - len(row)))
+                elif len(row) > len(header):
+                    padded_rows.append(row[:len(header)])
+                else:
+                    padded_rows.append(row)
+            cursor.executemany(insert_sql, padded_rows)
+            cursor.commit()
+
+        conn.close()
+        print(f"Successfully uploaded {len(data_rows)} rows to {final_table_name}")
 
     # ---------- shared helpers (mirror MetaSchema / C# Trans privates) ----------
 

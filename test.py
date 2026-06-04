@@ -57,15 +57,20 @@ def trans_demo() -> None:
     # t.save_meta_to_json(r"c:\temp\template.csv", r"c:\temp\csv-meta.json", "Tree/Street Tree")
     # t.save_meta_to_csv(r"c:\temp\template.csv", r"c:\temp\csv-meta.csv")
 
-    # CSV → thin CSV (every AttributeCode → its own column).
-    # t.template2thin(r"c:\temp\template.csv", r"c:\temp\thin.csv")
-    # t.template2thin(r"c:\temp\template11.csv", r"c:\temp\thin11.csv", asset_type_only=True)
-    # t.thin2import(r"c:\temp\thin11.csv", r"c:\temp\import11.csv")
+   
 
-    t.template2flat(r"c:\temp\template13.csv", r"c:\temp\flat13.csv")
-    t.csv2xlsx(r"c:\temp\flat13.csv", r"flat")
+    #t.template2flat(r"c:\temp\template14.csv", r"c:\temp\flat14.csv")
+    #t.csv2xlsx(r"c:\temp\flat14.csv", r"flat")
     #t.xlsx2csv(r"c:\temp\flat12.xlsx", r"flat")
     #t.flat2import(r"c:\temp\flat12.csv", r"c:\temp\import12.csv")
+
+    # t.template2thin(r"c:\temp\template.csv", r"c:\temp\thin.csv")
+    #t.template2thin(r"c:\temp\template15.csv", r"c:\temp\thin15.csv", asset_type_only=True) 
+    #t.csv2xlsx(r"c:\temp\thin15.csv", r"thin")
+    #t.xlsx2csv(r"c:\temp\flat12.xlsx", r"flat")
+    t.thin2import(r"c:\temp\thin15.csv", r"c:\temp\import15.csv")
+
+    #t.csv2db(r"c:\temp\thin15.csv", "mcc", "t1.thin15")
 
     print("done")
 
